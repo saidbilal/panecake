@@ -38,13 +38,12 @@ Changes to `server.mjs` or `public/` need only an app restart. Rebuild only afte
 - **Finding a chat's folder:** resuming needs the chat's original folder, and later `cwd` values in a transcript can differ. `parseSession` picks the `cwd` that encodes to the transcript's folder name.
 - **Reading transcripts:** only the first and last 128 KB are read normally. A pasted screenshot can push the first message past that, so people's chats get a longer read of up to 16 MB. Raise `INDEX_VERSION` whenever parsing changes.
 - **Titles:** Claude Code writes its own automatic title into each transcript as `ai-title` records and rewrites them as the chat goes on; the newest wins. Priority: a Deck rename, `/rename` (`custom-title`), a title the user chose in Desktop, `ai-title`, Desktop's automatic title, then the first real prompt. Pasted-text tags are stripped, and bare commands such as `/model` or `/clear clear` never become a title.
-- **Live state:** `~/.claude/sessions/<pid>.json` and `~/.claudette/sessions/` supply busy, idle and waiting status, and the current session ID, which changes on `/clear` and `/resume`.
-- **Alternate config:** sessions listed in `~/.claudette/session-env/` must resume with `CLAUDE_CONFIG_DIR=~/.claudette`, mirroring the user's zsh `claude` wrapper.
+- **Live state:** `~/.claude/sessions/<pid>.json` supplies busy, idle and waiting status, and the current session ID, which changes on `/clear` and `/resume`.
 - **Rendering:** use xterm's DOM renderer. The WebGL addon rendered a blank terminal in testing.
 - **Dragging:** the grid uses mouse events rather than HTML5 drag and drop, so it behaves the same in Chrome and WKWebView and can be tested in both.
 - **Cmd+click:** the fullscreen TUI turns on mouse tracking, so Deck finds the text under the pointer itself and intercepts the click before xterm sees it. Do not rely on xterm's link providers for this.
 - **Find (Cmd+F):** terminals use `@xterm/addon-search`, which covers scrollback. A chat's fullscreen TUI keeps its own history, so there only the visible screen is searchable. Markdown previews use the CSS Custom Highlight API, so the page itself is never modified. The add-on ignores option changes until `clearDecorations()` is called, which is why the case toggle calls it.
-- **Option key:** it does not act as Alt by default, because the user's Turkish-QWERTY-PC layout needs it to type characters like `@` and `#`.
+- **Option key:** it does not act as Alt by default, because Turkish, German and other non-US layouts need it to type characters like `@` and `#`. Find folds case one character at a time so Turkish `İ` keeps match positions aligned.
 - **Status marks:** spinners are only for chats, which finish on their own. A terminal running a program gets a static green dot, since a dev server can run indefinitely.
 - **Sidebar columns:** carets and status dots stay in fixed columns so running chats can be scanned at a glance.
 - **Sidebar order:** projects come first by recent activity. Home and then the closed Issues section sit below a divider at the bottom, and each `issue-N` folder is its own group inside Issues.

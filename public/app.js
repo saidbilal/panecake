@@ -1844,7 +1844,7 @@ function settingsPopover() {
   pop.append(el('div', 'hint', 'Terminals need a fixed-width font. Fonts you have not installed fall back to SF Mono.'));
   num('Font size', 'fontSize', 10, 22, 0.5, applyTermPrefs);
   num('Line spacing', 'lineHeight', 1, 1.8, 0.05, applyTermPrefs);
-  check('Option key sends Alt', 'optionMeta', 'Off keeps Option typing characters such as @ and # on a Turkish keyboard. On enables shortcuts like Option+P.', applyTermPrefs);
+  check('Option key sends Alt', 'optionMeta', 'Off keeps Option typing characters such as @ and # on Turkish, German and other non-US keyboards. On enables shortcuts like Option+P.', applyTermPrefs);
   check('Show automated runs', 'showAutomated', data.hiddenAutomated ? `${data.hiddenAutomated} scripted or SDK runs are hidden.` : null, refreshSessions);
   check('Show hidden and archived', 'showHidden', null, refreshSessions);
   num('Max open processes', 'maxLive', 2, 40, 1);

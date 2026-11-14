@@ -14,8 +14,7 @@ import { WebSocketServer } from 'ws';
 const HOME = os.homedir();
 const ROOT = import.meta.dirname;
 const PROJECTS = path.join(HOME, '.claude/projects');
-const CLAUDETTE = path.join(HOME, '.claudette');
-const REGISTRIES = [path.join(HOME, '.claude/sessions'), path.join(CLAUDETTE, 'sessions')];
+const REGISTRY = path.join(HOME, '.claude/sessions');
 const DESKTOP_META = path.join(HOME, 'Library/Application Support/Claude/claude-code-sessions');
 const APP_DIR = process.env.DECK_DATA_DIR || path.join(HOME, 'Library/Application Support/Claude Deck');
 const STATE_FILE = path.join(APP_DIR, 'state.json');
@@ -383,19 +382,17 @@ function pidAlive(pid) {
 async function readRegistry() {
   const next = new Map();
   const byPid = new Map();
-  for (const dir of REGISTRIES) {
-    let names = [];
-    try { names = await fsp.readdir(dir); } catch { continue; }
-    for (const n of names) {
-      if (!/^\d+\.json$/.test(n)) continue;
-      try {
-        const o = JSON.parse(await fsp.readFile(path.join(dir, n), 'utf8'));
-        if (!o.sessionId || !pidAlive(o.pid) || o.kind === 'background-task') continue;
-        const e = { pid: o.pid, status: o.status || 'idle', entrypoint: o.entrypoint || 'cli', cwd: o.cwd };
-        byPid.set(o.pid, { ...e, sessionId: o.sessionId });
-        if (!next.has(o.sessionId) || o.pid > next.get(o.sessionId).pid) next.set(o.sessionId, e);
-      } catch {}
-    }
+  let names = [];
+  try { names = await fsp.readdir(REGISTRY); } catch {}
+  for (const n of names) {
+    if (!/^\d+\.json$/.test(n)) continue;
+    try {
+      const o = JSON.parse(await fsp.readFile(path.join(REGISTRY, n), 'utf8'));
+      if (!o.sessionId || !pidAlive(o.pid) || o.kind === 'background-task') continue;
+      const e = { pid: o.pid, status: o.status || 'idle', entrypoint: o.entrypoint || 'cli', cwd: o.cwd };
+      byPid.set(o.pid, { ...e, sessionId: o.sessionId });
+      if (!next.has(o.sessionId) || o.pid > next.get(o.sessionId).pid) next.set(o.sessionId, e);
+    } catch {}
   }
   registry = next;
   registryByPid = byPid;
@@ -444,15 +441,6 @@ const termList = () => [...terms.values()].map((t) => ({
   kind: t.kind, label: t.label || null, project: projectOf(t.cwd).path, startedAt: t.startedAt,
 }));
 
-function configEnvFor(sessionId) {
-  // Mirrors the user's zsh `claude` wrapper: sessions created under the alternate
-  // config directory must resume with it.
-  if (sessionId && fs.existsSync(path.join(CLAUDETTE, 'session-env', sessionId))) {
-    return { CLAUDE_CONFIG_DIR: CLAUDETTE };
-  }
-  return {};
-}
-
 function startTerm({ sessionId, cwd, fork, cols, rows }) {
   const isNew = !sessionId;
   const args = [];
@@ -461,7 +449,7 @@ function startTerm({ sessionId, cwd, fork, cols, rows }) {
   else { args.push('--resume', sessionId); if (fork) args.push('--fork-session'); }
   const p = pty.spawn(CLAUDE, args, {
     name: 'xterm-256color', cols: cols || 110, rows: rows || 34, cwd,
-    env: { ...ENV, ...configEnvFor(sessionId) },
+    env: ENV,
   });
   const t = registerTerm(p, { kind: 'claude', cwd, status: 'starting', sessionId: fork ? null : id });
   evict();
@@ -734,8 +722,7 @@ async function api(req, res, url) {
       if (!UUID.test(body.sessionId || '')) return send(res, 400, {});
       const cwd = cwdForSession(body.sessionId);
       if (!cwd || !fs.existsSync(cwd)) return send(res, 200, { error: 'folder not found' });
-      const prefix = configEnvFor(body.sessionId).CLAUDE_CONFIG_DIR ? `CLAUDE_CONFIG_DIR=${shq(CLAUDETTE)} ` : '';
-      const cmd = `cd ${shq(cwd)} && ${prefix}${shq(CLAUDE)} --resume ${body.sessionId}`;
+      const cmd = `cd ${shq(cwd)} && ${shq(CLAUDE)} --resume ${body.sessionId}`;
       const { err } = await run('/usr/bin/osascript', ['-e', `tell application "Terminal" to do script ${asq(cmd)}`, '-e', 'tell application "Terminal" to activate']);
       return send(res, 200, { error: err ? err.message : null });
     }
