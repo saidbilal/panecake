@@ -105,9 +105,12 @@ function createTerm(termId, info) {
   });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
+  const search = new SearchAddon.SearchAddon({ highlightLimit: 2000 });
+  term.loadAddon(search);
+  search.onDidChangeResults((r) => { if (find?.termId === termId) showFindCount(r.resultIndex, r.resultCount); });
   term.loadAddon(new Unicode11Addon.Unicode11Addon());
   term.unicode.activeVersion = '11';
-  t = { termId, term, fit, host, box, sessionId: info.sessionId || null, cwd: info.cwd, pid: info.pid, status: info.status, kind: info.kind || 'claude', project: info.project, label: info.label || null, startedAt: info.startedAt || Date.now(), muted: false, opened: false };
+  t = { termId, term, fit, search, host, box, sessionId: info.sessionId || null, cwd: info.cwd, pid: info.pid, status: info.status, kind: info.kind || 'claude', project: info.project, label: info.label || null, startedAt: info.startedAt || Date.now(), muted: false, opened: false };
   terms.set(termId, t);
 
   term.onData((d) => { if (!t.muted) sendInput(termId, d); });
@@ -294,7 +297,7 @@ function panelFor(p) {
   n.append(el('h1', '', 'Claude Deck'), el('p', '', 'Pick a chat on the left, or start a new one. Every chat runs the real claude CLI.'));
   const keys = el('dl', 'keys');
   for (const [k, v] of [
-    ['⌘N', 'New chat'], ['⌘J', 'New terminal in the active folder'], ['⌘K', 'Search chats'],
+    ['⌘N', 'New chat'], ['⌘J', 'New terminal in the active folder'], ['⌘K', 'Search chats'], ['⌘F', 'Find in this pane'],
     ['Drag a chat', 'Onto this area to build a grid'], ['⌘⌥↑ ⌘⌥↓', 'Previous or next chat in the sidebar'],
     ['⌘+click', 'A path or link in a terminal: Finder, browser, or .md preview'], ['⌘⌥← ⌘⌥→', 'Move between panes'], ['⌘[ ⌘]', 'Back or forward through what you opened'], ['⌘B', 'Toggle sidebar'],
   ]) keys.append(el('dt', '', k), el('dd', '', v));
@@ -309,7 +312,7 @@ function renderPane(p) {
   const t = terms.get(p.termId);
   const panel = panelFor(p);
   // Leaving a kept element in place preserves its scroll position.
-  for (const c of [...p.stage.children]) if (c !== t?.host && c !== panel) c.remove();
+  for (const c of [...p.stage.children]) if (c !== t?.host && c !== panel && c !== find?.bar) c.remove();
   if (t) {
     if (t.host.parentNode !== p.stage) p.stage.append(t.host);
     t.host.classList.add('show');
@@ -347,6 +350,8 @@ function renderGrid() {
   syncActive();
   sendVisible();
   saveLayout();
+  // A find bar only makes sense while its pane still shows the same thing.
+  if (find && (!isAttached(find.pane) || find.pane.termId !== find.termId || find.pane.mdPath !== find.mdPath)) closeFind(false);
   requestAnimationFrame(() => { for (const p of leaves()) { const t = terms.get(p.termId); if (t) fitTerm(t); } });
   updateHeader();
   renderList();
@@ -776,6 +781,7 @@ async function loadMd(p) {
   }
   p.mdBody.replaceChildren(...doc.body.childNodes);
   p.mdView.scrollTop = scroll;
+  if (find?.pane === p) runFind('refresh');
 }
 
 function resolveFrom(base, rel) {
@@ -807,6 +813,190 @@ const slug = (s) => s.trim().toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, '').rep
 
 // Shows edits to the file as they happen, such as Claude writing to it.
 setInterval(() => { for (const p of leaves()) if (p.mdPath && p.mdShown === p.mdPath) loadMd(p); }, 2000);
+
+// ---------- find in a pane (Cmd+F) ----------
+// Terminals use xterm's search add-on, which also covers scrollback. A chat's
+// fullscreen TUI keeps its own history, so there only the visible screen is
+// searchable. Markdown previews are searched here and highlighted without
+// touching the page, so matches can span formatting like **bold** text.
+let find = null;
+let lastFindQuery = '';
+let findCase = false;
+const FIND_DECOR = {
+  matchBackground: '#5c4d24', matchBorder: '#7a6630', matchOverviewRuler: '#e0b050',
+  activeMatchBackground: '#d97757', activeMatchBorder: '#f0a080', activeMatchColorOverviewRuler: '#d97757',
+};
+
+function findKind(p) {
+  if (p.mdPath && p.mdView) return 'md';
+  if (p.termId && terms.get(p.termId)?.opened) return 'term';
+  return null;
+}
+
+function openFind() {
+  const p = activePane;
+  const kind = findKind(p);
+  if (!kind) return;
+  if (find && find.pane === p) { find.input.focus(); find.input.select(); return; }
+  closeFind(false);
+  const bar = el('div', 'findbar');
+  const input = el('input');
+  input.placeholder = 'Find';
+  input.spellcheck = false;
+  input.autocomplete = 'off';
+  const count = el('span', 'find-count');
+  const btn = (label, title, fn) => {
+    const b = el('button', 'icon', label);
+    b.title = title;
+    b.onmousedown = (e) => e.preventDefault(); // keep typing focus in the box
+    b.onclick = fn;
+    return b;
+  };
+  // In a terminal the newest output is at the bottom, so Enter searches upward,
+  // as in VS Code's terminal. In a document it reads downward.
+  const upFirst = kind === 'term';
+  const caseBtn = btn('Aa', 'Match case', () => {
+    findCase = !findCase;
+    caseBtn.classList.toggle('on', findCase);
+    runFind('recase');
+  });
+  caseBtn.classList.add('case');
+  caseBtn.classList.toggle('on', findCase);
+  const up = btn('', upFirst ? 'Previous match, older (Enter)' : 'Previous match (Shift+Enter)', () => runFind(upFirst ? 'forward' : 'back'));
+  up.innerHTML = '<svg viewBox="0 0 16 16"><path d="M4 10l4-4 4 4"/></svg>';
+  const down = btn('', upFirst ? 'Next match, newer (Shift+Enter)' : 'Next match (Enter)', () => runFind(upFirst ? 'back' : 'forward'));
+  down.innerHTML = '<svg viewBox="0 0 16 16"><path d="M4 6l4 4 4-4"/></svg>';
+  const close = btn('', 'Close (Esc)', () => closeFind());
+  close.innerHTML = '<svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
+  bar.append(input, count, caseBtn, up, down, close);
+  find = { pane: p, kind, termId: p.termId, mdPath: p.mdPath, bar, input, count, index: -1, ranges: [], upFirst };
+  input.addEventListener('input', () => runFind('type'));
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeFind(); }
+    else if (e.key === 'Enter') { e.preventDefault(); runFind(e.shiftKey ? 'back' : 'forward'); }
+  });
+  p.stage.append(bar);
+  input.value = lastFindQuery;
+  input.focus();
+  input.select();
+  if (input.value) runFind('type');
+}
+
+function closeFind(refocusAfter = true) {
+  if (!find) return;
+  const f = find;
+  find = null;
+  if (f.kind === 'term') {
+    const t = terms.get(f.termId);
+    if (t) { try { t.search.clearDecorations(); } catch {} t.term.clearSelection(); }
+  } else if (window.CSS?.highlights) {
+    CSS.highlights.delete('deck-find');
+    CSS.highlights.delete('deck-find-active');
+  }
+  f.bar.remove();
+  if (refocusAfter) refocus();
+}
+
+function showFindCount(index, total) {
+  if (!find) return;
+  const q = find.input.value;
+  find.count.classList.toggle('none', !!q && total === 0);
+  if (!q) find.count.textContent = '';
+  else if (total === 0) find.count.textContent = 'No results';
+  else if (index < 0) find.count.textContent = `${total}+`;
+  else find.count.textContent = `${index + 1} of ${total}`;
+}
+
+// mode: 'type' (query changed), 'recase', 'forward' (Enter), 'back' (Shift+Enter), 'refresh'.
+function runFind(mode) {
+  if (!find) return;
+  const q = find.input.value;
+  lastFindQuery = q;
+  if (find.kind === 'term') {
+    const t = terms.get(find.termId);
+    if (!t) return;
+    if (!q) { t.search.clearDecorations(); t.term.clearSelection(); showFindCount(-1, 0); return; }
+    const opts = { caseSensitive: findCase, decorations: FIND_DECOR };
+    // The add-on keeps its last results and does not notice an options change.
+    if (mode === 'recase') { t.search.clearDecorations(); mode = 'type'; }
+    // Upward is findPrevious; typing starts from the newest output.
+    const upward = mode === 'back' ? !find.upFirst : find.upFirst;
+    if (mode === 'type') t.search.findPrevious(q, { ...opts, incremental: true });
+    else if (upward) t.search.findPrevious(q, opts);
+    else t.search.findNext(q, opts);
+    return;
+  }
+  if (mode === 'recase') mode = 'type';
+  const p = find.pane;
+  find.ranges = q ? mdRanges(p.mdBody, q, findCase) : [];
+  const n = find.ranges.length;
+  if (!n) find.index = -1;
+  else if (mode === 'type' || find.index < 0) find.index = firstVisibleRange(p, find.ranges);
+  else if (mode === 'forward') find.index = (find.index + 1) % n;
+  else if (mode === 'back') find.index = (find.index - 1 + n) % n;
+  else find.index = Math.min(find.index, n - 1);
+  if (window.CSS?.highlights && window.Highlight) {
+    CSS.highlights.set('deck-find', new Highlight(...find.ranges));
+    if (n) CSS.highlights.set('deck-find-active', new Highlight(find.ranges[find.index]));
+    else CSS.highlights.delete('deck-find-active');
+  }
+  if (n && mode !== 'refresh') revealRange(p, find.ranges[find.index]);
+  showFindCount(find.index, n);
+}
+
+// Lowercases one character at a time so positions stay put. Turkish İ would
+// otherwise become two characters.
+function foldCase(s) {
+  let out = '';
+  for (const ch of s) {
+    if (ch === 'İ') { out += 'i'; continue; }
+    const l = ch.toLowerCase();
+    out += l.length === ch.length ? l : ch;
+  }
+  return out;
+}
+
+function mdRanges(body, q, caseSensitive) {
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  let text = '';
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    nodes.push({ n, start: text.length });
+    text += n.nodeValue;
+  }
+  const hay = caseSensitive ? text : foldCase(text);
+  const needle = caseSensitive ? q : foldCase(q);
+  const out = [];
+  let k = 0;
+  // Matches come in order, so one pointer walks the text nodes.
+  const at = (pos, isEnd) => {
+    while (k < nodes.length - 1 && (isEnd ? nodes[k + 1].start < pos : nodes[k + 1].start <= pos)) k++;
+    return nodes[k];
+  };
+  for (let i = hay.indexOf(needle); i >= 0 && needle && out.length < 5000; i = hay.indexOf(needle, i + needle.length)) {
+    const a = at(i, false);
+    const r = document.createRange();
+    r.setStart(a.n, i - a.start);
+    const b = at(i + needle.length, true);
+    r.setEnd(b.n, i + needle.length - b.start);
+    out.push(r);
+  }
+  return out;
+}
+
+function firstVisibleRange(p, ranges) {
+  const top = p.mdView.getBoundingClientRect().top;
+  const i = ranges.findIndex((r) => r.getBoundingClientRect().top >= top);
+  return i < 0 ? 0 : i;
+}
+
+function revealRange(p, r) {
+  const rect = r.getBoundingClientRect();
+  const view = p.mdView.getBoundingClientRect();
+  if (rect.top < view.top + 48 || rect.bottom > view.bottom - 24) {
+    p.mdView.scrollTop += rect.top - view.top - view.height / 3;
+  }
+}
 
 // ---------- dragging chats into the grid ----------
 let drag = null;
@@ -1046,6 +1236,8 @@ window.addEventListener('keydown', (e) => {
   if (k === 'n') { e.preventDefault(); newChatMenu($('btn-new')); }
   else if (k === 'k') { e.preventDefault(); if (prefs.sidebarHidden) toggleSidebar(); $('search').focus(); $('search').select(); }
   else if (k === 'j') { e.preventDefault(); newTerminal(); }
+  else if (k === 'f') { e.preventDefault(); openFind(); }
+  else if (k === 'g' && find) { e.preventDefault(); runFind(e.shiftKey ? 'back' : 'forward'); }
   else if (k === 'b') { e.preventDefault(); toggleSidebar(); }
   else if (k === 'w') { e.preventDefault(); closePane(activePane); }
   else if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); stepPane(-1); }

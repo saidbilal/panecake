@@ -8,7 +8,7 @@ fs.mkdirSync(out, { recursive: true });
 for (const f of [
   '@xterm/xterm/lib/xterm.js', '@xterm/xterm/css/xterm.css',
   '@xterm/addon-fit/lib/addon-fit.js',
-  '@xterm/addon-unicode11/lib/addon-unicode11.js',
+  '@xterm/addon-unicode11/lib/addon-unicode11.js', '@xterm/addon-search/lib/addon-search.js',
   'marked/lib/marked.umd.js', 'dompurify/dist/purify.min.js',
 ]) fs.copyFileSync(path.join(root, 'node_modules', f), path.join(out, path.basename(f)));
 const pre = path.join(root, 'node_modules/node-pty/prebuilds');

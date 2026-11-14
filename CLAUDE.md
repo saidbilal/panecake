@@ -42,6 +42,7 @@ Changes to `server.mjs` or `public/` need only an app restart. Rebuild only afte
 - **Rendering:** use xterm's DOM renderer. The WebGL addon rendered a blank terminal in testing.
 - **Dragging:** the grid uses mouse events rather than HTML5 drag and drop, so it behaves the same in Chrome and WKWebView and can be tested in both.
 - **Cmd+click:** the fullscreen TUI turns on mouse tracking, so Deck finds the text under the pointer itself and intercepts the click before xterm sees it. Do not rely on xterm's link providers for this.
+- **Find (Cmd+F):** terminals use `@xterm/addon-search`, which covers scrollback. A chat's fullscreen TUI keeps its own history, so there only the visible screen is searchable. Markdown previews use the CSS Custom Highlight API, so the page itself is never modified. The add-on ignores option changes until `clearDecorations()` is called, which is why the case toggle calls it.
 - **Option key:** it does not act as Alt by default, because the user's Turkish-QWERTY-PC layout needs it to type characters like `@` and `#`.
 - **Status marks:** spinners are only for chats, which finish on their own. A terminal running a program gets a static green dot, since a dev server can run indefinitely.
 - **Sidebar columns:** carets and status dots stay in fixed columns so running chats can be scanned at a glance.
@@ -55,5 +56,6 @@ Changes to `server.mjs` or `public/` need only an app restart. Rebuild only afte
 - Set `ANTHROPIC_MODEL` to a small model when a test sends messages. Do not use `/model`, which can change the user's settings. `!command` in the TUI can still trigger a model reply.
 - Mock `/api/reveal` and `/api/open-url` in tests so windows do not open on the user's screen.
 - Chrome is not WebKit. Check UI changes in a temporary copy of `mac/main.swift` too, using `WKWebView.takeSnapshot`, because Terminal has no Screen Recording permission for `screencapture`.
+- A WKWebView probe window behind other windows reports `document.visibilityState` as hidden, and WebKit pauses drawing. Call `window.orderFrontRegardless()` before judging what it renders.
 - Look at screenshots as well as assertions. They have caught bugs that passing checks missed.
 - A test that crashes can leave its server and PTYs running. The user's own app runs the same `server.mjs`, so check the PID before stopping anything.
