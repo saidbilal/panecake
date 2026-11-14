@@ -8,7 +8,13 @@ sidebar, several chats side by side in a grid, and terminals next to them.
 
 ![Claude Deck with three chats in a grid](docs/screenshot.png)
 
-<!-- Demo video: on GitHub, edit this file and drag the .mp4 here to embed it. -->
+https://github.com/user-attachments/assets/1df122a0-8cf2-482b-baef-7b7aacd94583
+
+## Why I needed it
+
+Claude Code in a terminal is fast and light, but once you run many chats across projects, terminal tabs stop scaling. You can't easily see which chats are working, finished or waiting on you, or where last week's chat lives, and a closed chat has to be found again with /resume. IDEs and the Claude desktop app solve that, but bring far more than I needed, and in my use the desktop app's chats started with more of the context window already used than the plain CLI.
+
+Deck adds only the missing layer around the plain CLI: a sidebar, a grid, status and search. It adds nothing to your chats. Each one gets exactly the context Claude Code itself loads.
 
 ## Why it is built this way
 
