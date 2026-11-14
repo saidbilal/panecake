@@ -84,7 +84,7 @@ function saveState() {
 const HEAD = 128 * 1024;
 const TAIL = 128 * 1024;
 const FRONT_MAX = 16 * 1024 * 1024;
-const INDEX_VERSION = 2; // raise when parsing changes, so old results are redone
+const INDEX_VERSION = 4; // raise when parsing changes, so old results are redone
 const index = new Map(); // sessionId -> parsed row
 let indexReady = false;
 let cache = {};
@@ -93,12 +93,18 @@ try {
   if (saved.version === INDEX_VERSION) cache = saved.rows;
 } catch {}
 
+// "/model", or "/clear clear" as older versions recorded it, says nothing about a
+// chat. A command with real arguments, like "/shape-task #478", is kept.
+const bareCommand = (t) => /^\/(\S+)(\s+\1)?$/u.test(String(t || '').trim());
+
 function cleanPrompt(content) {
   let text = typeof content === 'string' ? content
     : Array.isArray(content) ? (content.find((b) => b && b.type === 'text') || {}).text : '';
   if (!text) return '';
-  text = text.trim();
+  // Pasted text arrives wrapped in a tag; the words inside are what matter.
+  text = text.replace(/<\/?pasted_content[^>]*>/g, ' ').trim();
   if (/^<(command-|local-command|system-reminder|task-notification|teammate-|bash-|user-memory|session-)/.test(text)) return '';
+  if (bareCommand(text)) return '';
   if (text.startsWith('Caveat:') || text.startsWith('[Request interrupted')) return '';
   return text.replace(/\s+/g, ' ').slice(0, 240);
 }
@@ -148,7 +154,7 @@ async function parseSession(file, st) {
     }
     const row = {
       id: path.basename(file, '.jsonl'), mtime: st.mtimeMs, size: st.size,
-      cwd: null, entrypoint: null, branch: null, parent: null, customTitle: null, firstPrompt: '', lastPrompt: '',
+      cwd: null, entrypoint: null, branch: null, parent: null, customTitle: null, aiTitle: null, firstPrompt: '', lastPrompt: '',
     };
     row.entrypoint = firstMatch(head, /"entrypoint":"([^"]+)"/) || firstMatch(tail, /"entrypoint":"([^"]+)"/);
     const CWD = /"cwd":"((?:[^"\\]|\\.)*)"/;
@@ -186,8 +192,19 @@ async function parseSession(file, st) {
       if (line.includes('"type":"custom-title"')) {
         try { row.customTitle = JSON.parse(line).customTitle || row.customTitle; } catch {}
       }
+      if (line.includes('"type":"ai-title"')) {
+        try { row.aiTitle = JSON.parse(line).aiTitle || row.aiTitle; } catch {}
+      }
       if (line.includes('"type":"last-prompt"')) {
         try { row.lastPrompt = cleanPrompt(JSON.parse(line).lastPrompt) || row.lastPrompt; } catch {}
+      }
+    }
+    // Claude Code keeps rewriting its automatic title; the newest one wins.
+    if (!row.aiTitle && tail !== head) {
+      for (const line of head.split('\n')) {
+        if (line.includes('"type":"ai-title"')) {
+          try { row.aiTitle = JSON.parse(line).aiTitle || row.aiTitle; } catch {}
+        }
       }
     }
     return row;
@@ -264,7 +281,7 @@ async function loadDesktopMeta() {
       desktopFileCache.set(f, { mtime: st.mtimeMs });
       if (!o.cliSessionId) return;
       desktopMeta.set(o.cliSessionId, {
-        title: o.title || null, archived: !!o.isArchived,
+        title: o.title || null, titleSource: o.titleSource || null, archived: !!o.isArchived,
         forkedFromLocal: o.forkedFromSessionId || o.spawnedFrom?.sessionId || null,
       });
       if (o.sessionId) localToCli.set(o.sessionId, o.cliSessionId);
@@ -283,8 +300,11 @@ function projectOf(cwd) {
 }
 
 function titleOf(row) {
-  const named = (t) => (t && t !== 'New session' ? t : null);
-  return state.titles[row.id] || named(row.customTitle) || named(desktopMeta.get(row.id)?.title)
+  // Names a person chose come first, then Claude Code's automatic title.
+  const named = (t) => (t && t !== 'New session' && !bareCommand(t) ? t : null);
+  const meta = desktopMeta.get(row.id);
+  const chosen = meta?.titleSource && meta.titleSource !== 'auto' ? named(meta.title) : null;
+  return state.titles[row.id] || named(row.customTitle) || chosen || named(row.aiTitle) || named(meta?.title)
     || row.firstPrompt || row.lastPrompt || 'New session';
 }
 
@@ -299,7 +319,7 @@ function sidebarData(includeAutomated, includeHidden) {
     // Scratch folders under the temp directory are throwaway agent runs.
     const scratch = /^\/(private\/)?tmp\//.test(row.cwd || '');
     const interactive = !scratch && (row.entrypoint === 'cli' || row.entrypoint === 'claude-desktop' || !!meta);
-    const hasContent = row.firstPrompt || row.lastPrompt || row.customTitle || meta?.title || state.titles[row.id];
+    const hasContent = row.firstPrompt || row.lastPrompt || row.customTitle || row.aiTitle || meta?.title || state.titles[row.id];
     // A chat running anywhere right now always belongs in the list.
     if (!hasContent && !live && !registry.has(row.id)) continue;
     if (!live && !includeHidden && (state.hidden[row.id] || meta?.archived)) continue;

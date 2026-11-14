@@ -37,6 +37,7 @@ Changes to `server.mjs` or `public/` need only an app restart. Rebuild only afte
 
 - **Finding a chat's folder:** resuming needs the chat's original folder, and later `cwd` values in a transcript can differ. `parseSession` picks the `cwd` that encodes to the transcript's folder name.
 - **Reading transcripts:** only the first and last 128 KB are read normally. A pasted screenshot can push the first message past that, so people's chats get a longer read of up to 16 MB. Raise `INDEX_VERSION` whenever parsing changes.
+- **Titles:** Claude Code writes its own automatic title into each transcript as `ai-title` records and rewrites them as the chat goes on; the newest wins. Priority: a Deck rename, `/rename` (`custom-title`), a title the user chose in Desktop, `ai-title`, Desktop's automatic title, then the first real prompt. Pasted-text tags are stripped, and bare commands such as `/model` or `/clear clear` never become a title.
 - **Live state:** `~/.claude/sessions/<pid>.json` and `~/.claudette/sessions/` supply busy, idle and waiting status, and the current session ID, which changes on `/clear` and `/resume`.
 - **Alternate config:** sessions listed in `~/.claudette/session-env/` must resume with `CLAUDE_CONFIG_DIR=~/.claudette`, mirroring the user's zsh `claude` wrapper.
 - **Rendering:** use xterm's DOM renderer. The WebGL addon rendered a blank terminal in testing.
