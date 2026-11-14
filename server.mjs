@@ -1,6 +1,6 @@
-// Claude Deck server: indexes Claude Code's transcripts for the sidebar and runs
+// Panecake server: indexes Claude Code's transcripts for the sidebar and runs
 // the real `claude` binary in pseudo-terminals. It never writes inside ~/.claude;
-// renames and hides live in Deck's own state file.
+// renames and hides live in Panecake's own state file.
 import http from 'node:http';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -16,20 +16,25 @@ const ROOT = import.meta.dirname;
 const PROJECTS = path.join(HOME, '.claude/projects');
 const REGISTRY = path.join(HOME, '.claude/sessions');
 const DESKTOP_META = path.join(HOME, 'Library/Application Support/Claude/claude-code-sessions');
-const APP_DIR = process.env.DECK_DATA_DIR || path.join(HOME, 'Library/Application Support/Claude Deck');
+const APP_DIR = process.env.PANECAKE_DATA_DIR || path.join(HOME, 'Library/Application Support/Panecake');
 const STATE_FILE = path.join(APP_DIR, 'state.json');
 const CACHE_FILE = path.join(APP_DIR, 'index-cache.json');
 const TOKEN = crypto.randomBytes(24).toString('hex');
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RING_BYTES = 2 * 1024 * 1024;
 
+// Before the rename, settings lived under "Claude Deck". Carry them over once.
+const OLD_APP_DIR = path.join(HOME, 'Library/Application Support/Claude Deck');
+if (!process.env.PANECAKE_DATA_DIR && !fs.existsSync(APP_DIR) && fs.existsSync(OLD_APP_DIR)) {
+  try { fs.cpSync(OLD_APP_DIR, APP_DIR, { recursive: true }); } catch {}
+}
 fs.mkdirSync(APP_DIR, { recursive: true });
 
 // ---------- environment ----------
 // Launched from Finder, an app gets a bare environment. Borrow the user's real
 // shell environment so `claude` and its Bash tool behave as in a terminal.
 function loginEnv() {
-  const marker = '__DECK_ENV__';
+  const marker = '__PANECAKE_ENV__';
   const r = spawnSync('/bin/zsh', ['-ilc', `printf ${marker}; /usr/bin/env -0`], {
     encoding: 'utf8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 8 * 1024 * 1024,
   });
@@ -45,10 +50,10 @@ function loginEnv() {
   for (const k of ['CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_EFFORT', 'AI_AGENT', 'CLAUDE_CONFIG_DIR',
     'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN',
     'CLAUDE_CODE_BRIDGE_SESSION_ID', 'CLAUDE_CODE_EXECPATH', 'CLAUDE_CODE_SESSION_ID',
-    'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ATTENDED', 'DECK_PARENT']) delete env[k];
+    'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ATTENDED', 'PANECAKE_PARENT']) delete env[k];
   env.TERM = 'xterm-256color';
   env.COLORTERM = 'truecolor';
-  env.TERM_PROGRAM = 'ClaudeDeck';
+  env.TERM_PROGRAM = 'Panecake';
   if (!env.LANG) env.LANG = 'en_US.UTF-8';
   return env;
 }
@@ -750,7 +755,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
   try {
     if (url.pathname.startsWith('/api/')) {
-      if (!tokenEq(req.headers['x-deck-token'])) return send(res, 403, { error: 'forbidden' });
+      if (!tokenEq(req.headers['x-panecake-token'])) return send(res, 403, { error: 'forbidden' });
       return await api(req, res, url);
     }
     if (url.pathname === '/local-image') {
@@ -813,14 +818,14 @@ function shutdown() {
 }
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
-if (process.env.DECK_PARENT) {
+if (process.env.PANECAKE_PARENT) {
   process.stdin.resume();
   process.stdin.on('end', shutdown);
 }
 
-server.listen(Number(process.env.DECK_PORT) || 0, '127.0.0.1', async () => {
+server.listen(Number(process.env.PANECAKE_PORT) || 0, '127.0.0.1', async () => {
   PORT = server.address().port;
-  console.log(`DECK_READY http://127.0.0.1:${PORT}/#${TOKEN}`);
+  console.log(`PANECAKE_READY http://127.0.0.1:${PORT}/#${TOKEN}`);
   watchProjects();
   setInterval(tickLive, 1000);
   setInterval(() => fullScan().catch(() => {}), 5 * 60 * 1000);

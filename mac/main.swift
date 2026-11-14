@@ -1,9 +1,9 @@
-// Claude Deck's native shell: a window with a web view, plus the Node server that
+// Panecake's native shell: a window with a web view, plus the Node server that
 // owns the `claude` processes. Quitting the app ends the server and those processes.
 import Cocoa
 import WebKit
 
-final class DeckWebView: WKWebView {
+final class PanecakeWebView: WKWebView {
     var lastMouseDown: NSEvent?
 
     override func mouseDown(with event: NSEvent) {
@@ -26,7 +26,7 @@ final class DeckWebView: WKWebView {
         if urls.isEmpty { return super.performDragOperation(info) }
         let paths = urls.map { $0.path }
         if let data = try? JSONSerialization.data(withJSONObject: paths), let json = String(data: data, encoding: .utf8) {
-            evaluateJavaScript("window.deckDrop(\(json))", completionHandler: nil)
+            evaluateJavaScript("window.panecakeDrop(\(json))", completionHandler: nil)
         }
         return true
     }
@@ -34,7 +34,7 @@ final class DeckWebView: WKWebView {
 
 final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
     var window: NSWindow!
-    var web: DeckWebView!
+    var web: PanecakeWebView!
     let server = Process()
     let serverStdin = Pipe()
     var quitConfirmed = false
@@ -48,9 +48,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     func buildWindow() {
         let config = WKWebViewConfiguration()
-        config.userContentController.add(self, name: "deck")
+        config.userContentController.add(self, name: "panecake")
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
-        web = DeckWebView(frame: .zero, configuration: config)
+        web = PanecakeWebView(frame: .zero, configuration: config)
         web.navigationDelegate = self
         web.uiDelegate = self
         web.setValue(false, forKey: "drawsBackground")
@@ -64,11 +64,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         window.titleVisibility = .hidden
         window.backgroundColor = NSColor(calibratedRed: 0.10, green: 0.10, blue: 0.10, alpha: 1)
         window.appearance = NSAppearance(named: .darkAqua)
-        window.title = "Claude Deck"
+        window.title = "Panecake"
         window.minSize = NSSize(width: 720, height: 420)
         window.contentView = web
         window.center()
-        window.setFrameAutosaveName("ClaudeDeckMain")
+        window.setFrameAutosaveName("PanecakeMain")
         window.makeKeyAndOrderFront(nil)
     }
 
@@ -80,9 +80,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             return i
         }
         let app = NSMenuItem(); let appMenu = NSMenu()
-        appMenu.addItem(item("Hide Claude Deck", #selector(NSApplication.hide(_:)), "h"))
+        appMenu.addItem(item("Hide Panecake", #selector(NSApplication.hide(_:)), "h"))
         appMenu.addItem(.separator())
-        appMenu.addItem(item("Quit Claude Deck", #selector(NSApplication.terminate(_:)), "q"))
+        appMenu.addItem(item("Quit Panecake", #selector(NSApplication.terminate(_:)), "q"))
         app.submenu = appMenu; main.addItem(app)
 
         // These items are what make Cmd+C and Cmd+V reach the web view.
@@ -104,13 +104,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
 
     func startServer() {
         let info = Bundle.main.infoDictionary ?? [:]
-        let node = info["DeckNode"] as? String ?? "/opt/homebrew/bin/node"
-        let root = info["DeckRoot"] as? String ?? ""
+        let node = info["PanecakeNode"] as? String ?? "/opt/homebrew/bin/node"
+        let root = info["PanecakeRoot"] as? String ?? ""
         server.executableURL = URL(fileURLWithPath: node)
         server.arguments = [root + "/server.mjs"]
         server.currentDirectoryURL = URL(fileURLWithPath: root)
         var env = ProcessInfo.processInfo.environment
-        env["DECK_PARENT"] = "1"
+        env["PANECAKE_PARENT"] = "1"
         server.environment = env
         let out = Pipe()
         server.standardOutput = out
@@ -122,7 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             if chunk.isEmpty { handle.readabilityHandler = nil; return }
             guard !loaded, let s = String(data: chunk, encoding: .utf8) else { return }
             buffer += s
-            if let r = buffer.range(of: "DECK_READY ") {
+            if let r = buffer.range(of: "PANECAKE_READY ") {
                 let line = buffer[r.upperBound...].prefix { $0 != "\n" }
                 if let url = URL(string: String(line)) {
                     loaded = true
@@ -134,7 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             DispatchQueue.main.async {
                 guard let self, !self.quitConfirmed else { return }
                 let a = NSAlert()
-                a.messageText = "Claude Deck's server stopped"
+                a.messageText = "Panecake's server stopped"
                 a.informativeText = "Quit and reopen the app. Your chats are saved by Claude Code."
                 a.runModal()
                 self.quitConfirmed = true
@@ -143,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         }
         do { try server.run() } catch {
             let a = NSAlert()
-            a.messageText = "Could not start Claude Deck"
+            a.messageText = "Could not start Panecake"
             a.informativeText = "\(node): \(error.localizedDescription)"
             a.runModal()
             NSApp.terminate(nil)
@@ -173,7 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     // Quitting ends every chat's process, so ask first if any is mid-turn.
     func applicationShouldTerminate(_ app: NSApplication) -> NSApplication.TerminateReply {
         if quitConfirmed { return .terminateNow }
-        web.evaluateJavaScript("window.deckBusyCount ? window.deckBusyCount() : 0") { [weak self] value, _ in
+        web.evaluateJavaScript("window.panecakeBusyCount ? window.panecakeBusyCount() : 0") { [weak self] value, _ in
             let busy = (value as? Int) ?? 0
             guard let self else { return }
             if busy > 0 {

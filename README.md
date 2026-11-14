@@ -1,12 +1,13 @@
-# Claude Deck
+# Panecake
 
-A macOS desktop app around the real Claude Code CLI: every chat you've had in a
-sidebar, several chats side by side in a grid, and terminals next to them.
+**Panes for your Claude Code chats.** A macOS desktop app around the real Claude
+Code CLI: every chat you've had in a sidebar, several chats side by side in a
+grid, and terminals next to them.
 
-> **Unofficial.** Claude Deck is a community project. It is not made by, affiliated
+> **Unofficial.** Panecake is a community project. It is not made by, affiliated
 > with or endorsed by Anthropic.
 
-![Claude Deck with three chats in a grid](docs/screenshot.png)
+![Panecake with three chats in a grid](docs/screenshot.png)
 
 https://github.com/user-attachments/assets/1df122a0-8cf2-482b-baef-7b7aacd94583
 
@@ -14,14 +15,14 @@ https://github.com/user-attachments/assets/1df122a0-8cf2-482b-baef-7b7aacd94583
 
 Claude Code in a terminal is fast and light, but once you run many chats across projects, terminal tabs stop scaling. You can't easily see which chats are working, finished or waiting on you, or where last week's chat lives, and a closed chat has to be found again with /resume. IDEs and the Claude desktop app solve that, but bring far more than I needed, and in my use the desktop app's chats started with more of the context window already used than the plain CLI.
 
-Deck adds only the missing layer around the plain CLI: a sidebar, a grid, status and search. It adds nothing to your chats. Each one gets exactly the context Claude Code itself loads.
+Panecake adds only the missing layer around the plain CLI: a sidebar, a grid, status and search. It adds nothing to your chats. Each one gets exactly the context Claude Code itself loads.
 
 ## Why it is built this way
 
-Each chat is the unmodified `claude` binary running in an embedded terminal. Deck
+Each chat is the unmodified `claude` binary running in an embedded terminal. Panecake
 does not reimplement the chat UI, so everything Claude Code does still works:
 slash commands, `/config`, pickers, permission prompts, the status line and your
-settings. When Claude Code updates, Deck gets the update for free.
+settings. When Claude Code updates, Panecake gets the update for free.
 
 ## Features
 
@@ -52,12 +53,12 @@ settings. When Claude Code updates, Deck gets the update for free.
 ## Install
 
 ```sh
-git clone https://github.com/saidbilal/claude-deck.git
-cd claude-deck
+git clone https://github.com/saidbilal/panecake.git
+cd panecake
 npm run build
 ```
 
-This installs dependencies and builds `~/Applications/Claude Deck.app`. The app
+This installs dependencies and builds `~/Applications/Panecake.app`. The app
 runs the server from this folder, so keep the folder where it is; if you move it,
 run `npm run build` again. macOS may ask whether Terminal can modify apps.
 
@@ -80,9 +81,9 @@ URL it prints.
 
 ## Privacy and security
 
-- **Read-only on Claude Code's data.** Deck reads `~/.claude` (and Claude
+- **Read-only on Claude Code's data.** Panecake reads `~/.claude` (and Claude
   Desktop's session list, if present) but never writes to them. Renames, hidden
-  chats and preferences live in `~/Library/Application Support/Claude Deck/`.
+  chats and preferences live in `~/Library/Application Support/Panecake/`.
 - **Local only.** The server listens on `127.0.0.1`, requires a token created at
   each launch, and checks the Host and WebSocket Origin headers, because it can type
   into shells.

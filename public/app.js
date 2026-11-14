@@ -1,4 +1,4 @@
-// Claude Deck client: sidebar plus one xterm.js terminal per live `claude` process.
+// Panecake client: sidebar plus one xterm.js terminal per live `claude` process.
 'use strict';
 const TOKEN = location.hash.slice(1);
 const $ = (id) => document.getElementById(id);
@@ -11,12 +11,12 @@ const el = (tag, cls, text) => {
 const api = async (route, body) => {
   const r = await fetch('/api/' + route, {
     method: body ? 'POST' : 'GET',
-    headers: { 'x-deck-token': TOKEN, 'content-type': 'application/json' },
+    headers: { 'x-panecake-token': TOKEN, 'content-type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   });
   return r.json();
 };
-const native = (msg) => { try { window.webkit?.messageHandlers?.deck?.postMessage(msg); } catch {} };
+const native = (msg) => { try { window.webkit?.messageHandlers?.panecake?.postMessage(msg); } catch {} };
 
 const PREF_DEFAULTS = {
   fontSize: 13.5, lineHeight: 1.3, fontFamily: 'system', optionMeta: false, showAutomated: false, showHidden: false,
@@ -294,7 +294,7 @@ function panelFor(p) {
     n.append(el('p', 'drop-hint', 'Drag a chat here'));
     return n;
   }
-  n.append(el('h1', '', 'Claude Deck'), el('p', '', 'Pick a chat on the left, or start a new one. Every chat runs the real claude CLI.'));
+  n.append(el('h1', '', 'Panecake'), el('p', '', 'Pick a chat on the left, or start a new one. Every chat runs the real claude CLI.'));
   const keys = el('dl', 'keys');
   for (const [k, v] of [
     ['⌘N', 'New chat'], ['⌘J', 'New terminal in the active folder'], ['⌘K', 'Search chats'], ['⌘F', 'Find in this pane'],
@@ -466,7 +466,7 @@ async function restoreLayout() {
 }
 
 // ---------- Cmd+click links in terminals ----------
-// The fullscreen TUI takes mouse clicks for itself, so Deck finds the text under
+// The fullscreen TUI takes mouse clicks for itself, so Panecake finds the text under
 // the pointer and intercepts Cmd+click before the terminal sees it. Only text that
 // names something real on disk, or a web address, gets underlined.
 let metaHeld = false;
@@ -890,8 +890,8 @@ function closeFind(refocusAfter = true) {
     const t = terms.get(f.termId);
     if (t) { try { t.search.clearDecorations(); } catch {} t.term.clearSelection(); }
   } else if (window.CSS?.highlights) {
-    CSS.highlights.delete('deck-find');
-    CSS.highlights.delete('deck-find-active');
+    CSS.highlights.delete('panecake-find');
+    CSS.highlights.delete('panecake-find-active');
   }
   f.bar.remove();
   if (refocusAfter) refocus();
@@ -936,9 +936,9 @@ function runFind(mode) {
   else if (mode === 'back') find.index = (find.index - 1 + n) % n;
   else find.index = Math.min(find.index, n - 1);
   if (window.CSS?.highlights && window.Highlight) {
-    CSS.highlights.set('deck-find', new Highlight(...find.ranges));
-    if (n) CSS.highlights.set('deck-find-active', new Highlight(find.ranges[find.index]));
-    else CSS.highlights.delete('deck-find-active');
+    CSS.highlights.set('panecake-find', new Highlight(...find.ranges));
+    if (n) CSS.highlights.set('panecake-find-active', new Highlight(find.ranges[find.index]));
+    else CSS.highlights.delete('panecake-find-active');
   }
   if (n && mode !== 'refresh') revealRange(p, find.ranges[find.index]);
   showFindCount(find.index, n);
@@ -1564,7 +1564,7 @@ function updateHeader() {
   $('btn-close-term').hidden = !t && !md;
   $('btn-back').disabled = histPos <= 0;
   $('btn-forward').disabled = histPos >= history.length - 1;
-  document.title = title ? `${title} · Claude Deck` : 'Claude Deck';
+  document.title = title ? `${title} · Panecake` : 'Panecake';
 }
 
 // ---------- opening chats ----------
@@ -1791,7 +1791,7 @@ async function openInTerminal(id) {
   const t = liveTermFor(id);
   const pane = activePane;
   if (t) {
-    setNotice(pane, 'Close it here first?', 'This chat is running in Claude Deck. Opening it in Terminal too would put two processes on the same chat.', [
+    setNotice(pane, 'Close it here first?', 'This chat is running in Panecake. Opening it in Terminal too would put two processes on the same chat.', [
       ['Close here and open in Terminal', async () => { await api('close', { termId: t.termId }); pane.notice = null; renderGrid(); setTimeout(() => api('open-terminal', { sessionId: id }), 500); }, true],
       ['Cancel', () => dismissNotice(pane)],
     ]);
@@ -1958,8 +1958,8 @@ $('resizer').addEventListener('mousedown', (e) => {
 });
 
 // Hooks for the native shell.
-window.deckBusyCount = () => [...terms.values()].filter((t) => t.status === 'busy' || t.status === 'waiting').length;
-window.deckDrop = (paths) => {
+window.panecakeBusyCount = () => [...terms.values()].filter((t) => t.status === 'busy' || t.status === 'waiting').length;
+window.panecakeDrop = (paths) => {
   const t = terms.get(activePane.termId);
   if (!t) return;
   const quoted = paths.map((p) => (/[^\w@%+=:,./-]/.test(p) ? `'${p.replace(/'/g, `'\\''`)}'` : p)).join(' ');
