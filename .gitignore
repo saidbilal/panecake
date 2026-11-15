@@ -2,3 +2,7 @@ node_modules/
 public/vendor/
 build/
 .DS_Store
+
+# Local secrets
+.env
+.env.*

@@ -9,13 +9,11 @@ BUILD="$ROOT/build"
 mkdir -p "$BUILD" "$HOME/Applications"
 swiftc -O -o "$BUILD/Panecake" "$ROOT/mac/main.swift" -framework Cocoa -framework WebKit
 
-ICONSRC="$BUILD/icon-src"; rm -rf "$ICONSRC"; mkdir -p "$ICONSRC"
-swiftc -o "$BUILD/icongen" "$ROOT/mac/icon.swift" -framework Cocoa
-"$BUILD/icongen" "$ICONSRC"
+# mac/icon.png is the 1024px master; scale it to every size the icon set needs.
 SET="$BUILD/AppIcon.iconset"; rm -rf "$SET"; mkdir -p "$SET"
 for s in 16 32 128 256 512; do
-  cp "$ICONSRC/$s.png" "$SET/icon_${s}x${s}.png"
-  cp "$ICONSRC/$((s*2)).png" "$SET/icon_${s}x${s}@2x.png"
+  sips -z "$s" "$s" "$ROOT/mac/icon.png" --out "$SET/icon_${s}x${s}.png" >/dev/null
+  sips -z "$((s*2))" "$((s*2))" "$ROOT/mac/icon.png" --out "$SET/icon_${s}x${s}@2x.png" >/dev/null
 done
 iconutil -c icns "$SET" -o "$BUILD/AppIcon.icns"
 
