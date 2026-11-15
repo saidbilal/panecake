@@ -50,6 +50,9 @@ settings. When Claude Code updates, Panecake gets the update for free.
   (nothing is launched), web links open in the browser, and `.md` files open in a
   sanitized preview pane.
 - **Find (⌘F).** In terminals, chats and Markdown previews.
+- **Light or dark.** Choose either, or follow macOS. Chats use the matching
+  Claude Code theme without changing your Claude Code settings.
+- **Separate text sizes** for the interface and for terminals.
 - **Keyboards beyond US layouts.** Option types characters such as `@` and `#` by
   default; a setting makes it act as Alt instead.
 
@@ -86,6 +89,9 @@ cd panecake
 git pull
 npm run build
 ```
+
+The build step only rebuilds the app when its native part changed. Most
+updates skip it, so macOS does not ask for permissions again.
 
 Versions before 0.2.0 have no Update button, so update those by hand once.
 Watch the repository's releases on GitHub to hear about new versions.

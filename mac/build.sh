@@ -4,9 +4,19 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NODE="$(command -v node)"
-VERSION="$("$NODE" -p "require('$ROOT/package.json').version")"
 APP="$HOME/Applications/Panecake.app"
 BUILD="$ROOT/build"
+
+# macOS ties privacy permissions to the app's signature. This app is signed
+# ad hoc, so every rebuild looks like a new app and macOS asks for its
+# permissions again. Skip the rebuild when nothing that goes into the app
+# changed: most updates touch only server.mjs and public/, which the app reads
+# from this folder at launch. Pass --force to rebuild anyway.
+STAMP="$( { cat "$ROOT/mac/main.swift" "$ROOT/mac/icon.png" "$ROOT/mac/build.sh"; printf '%s\n%s' "$NODE" "$ROOT"; } | shasum -a 256 | cut -d' ' -f1)"
+if [ "${1:-}" != "--force" ] && [ "$(cat "$APP/Contents/Resources/build-stamp" 2>/dev/null)" = "$STAMP" ]; then
+  echo "Panecake.app is already up to date; no rebuild needed."
+  exit 0
+fi
 mkdir -p "$BUILD" "$HOME/Applications"
 swiftc -O -o "$BUILD/Panecake" "$ROOT/mac/main.swift" -framework Cocoa -framework WebKit
 
@@ -22,6 +32,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BUILD/Panecake" "$APP/Contents/MacOS/Panecake"
 cp "$BUILD/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+echo "$STAMP" > "$APP/Contents/Resources/build-stamp"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -32,7 +43,6 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key><string>Panecake</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSAppleEventsUsageDescription</key><string>Opens a chat in Terminal when you ask it to.</string>

@@ -19,7 +19,7 @@ const api = async (route, body) => {
 const native = (msg) => { try { window.webkit?.messageHandlers?.panecake?.postMessage(msg); } catch {} };
 
 const PREF_DEFAULTS = {
-  fontSize: 13.5, lineHeight: 1.3, fontFamily: 'system', optionMeta: false, showAutomated: false, showHidden: false,
+  theme: 'dark', uiFontSize: 13.5, fontSize: 13.5, lineHeight: 1.3, fontFamily: 'system', optionMeta: false, showAutomated: false, showHidden: false,
   maxLive: 10, updateCheck: true, skipUpdate: null, sidebarWidth: 300, sidebarHidden: false, collapsed: {}, expanded: {}, folds: {}, lastSession: null, layout: null, lastCwd: null,
 };
 const FONTS = {
@@ -29,6 +29,35 @@ const FONTS = {
   fira: '"Fira Code", ui-monospace, Menlo, monospace',
   plex: '"IBM Plex Mono", ui-monospace, Menlo, monospace',
 };
+// Terminal palettes for each app theme. Claude Code adds colors of its own, so
+// the server starts chats with the matching Claude Code theme (see themeArgs).
+const TERM_THEMES = {
+  dark: {
+    background: '#1a1a1a', foreground: '#e2e2e0', cursor: '#e2e2e0', cursorAccent: '#1a1a1a',
+    selectionBackground: '#4a5a78', selectionInactiveBackground: '#3a4252',
+    black: '#2a2a2a', red: '#e5766e', green: '#8fc27e', yellow: '#dcb56a', blue: '#7aa7e8', magenta: '#c69ae0', cyan: '#6fc0c4', white: '#d6d6d2',
+    brightBlack: '#6f6f6b', brightRed: '#f28b82', brightGreen: '#a8d695', brightYellow: '#ecc987', brightBlue: '#97bdf2', brightMagenta: '#d7b3ec', brightCyan: '#8bd4d7', brightWhite: '#f4f4f0',
+  },
+  light: {
+    background: '#faf9f6', foreground: '#1f1f1d', cursor: '#1f1f1d', cursorAccent: '#faf9f6',
+    selectionBackground: '#c4d6f5', selectionInactiveBackground: '#dde4f0',
+    black: '#1f1f1d', red: '#c4453c', green: '#3c8a33', yellow: '#9a6c06', blue: '#2f6fd6', magenta: '#9446c2', cyan: '#18858a', white: '#8a8984',
+    brightBlack: '#6f6e69', brightRed: '#d65a50', brightGreen: '#4d9c43', brightYellow: '#b07f0c', brightBlue: '#4884e6', brightMagenta: '#a75ed2', brightCyan: '#23979c', brightWhite: '#a3a29c',
+  },
+};
+const FIND_DECORS = {
+  dark: {
+    matchBackground: '#5c4d24', matchBorder: '#7a6630', matchOverviewRuler: '#e0b050',
+    activeMatchBackground: '#d97757', activeMatchBorder: '#f0a080', activeMatchColorOverviewRuler: '#d97757',
+  },
+  light: {
+    matchBackground: '#f3e1a6', matchBorder: '#d9bd62', matchOverviewRuler: '#c48a12',
+    activeMatchBackground: '#e8a487', activeMatchBorder: '#c2603f', activeMatchColorOverviewRuler: '#c2603f',
+  },
+};
+const systemDark = matchMedia('(prefers-color-scheme: dark)');
+// 'system' follows macOS; anything else is taken as chosen.
+const activeTheme = () => (prefs.theme === 'system' ? (systemDark.matches ? 'dark' : 'light') : prefs.theme === 'light' ? 'light' : 'dark');
 let prefs = { ...PREF_DEFAULTS };
 let prefTimer;
 function savePrefs(patch) {
@@ -95,12 +124,7 @@ function createTerm(termId, info) {
     rightClickSelectsWord: false,
     drawBoldTextInBrightColors: false,
     minimumContrastRatio: 1,
-    theme: {
-      background: '#1a1a1a', foreground: '#e2e2e0', cursor: '#e2e2e0', cursorAccent: '#1a1a1a',
-      selectionBackground: '#4a5a78', selectionInactiveBackground: '#3a4252',
-      black: '#2a2a2a', red: '#e5766e', green: '#8fc27e', yellow: '#dcb56a', blue: '#7aa7e8', magenta: '#c69ae0', cyan: '#6fc0c4', white: '#d6d6d2',
-      brightBlack: '#6f6f6b', brightRed: '#f28b82', brightGreen: '#a8d695', brightYellow: '#ecc987', brightBlue: '#97bdf2', brightMagenta: '#d7b3ec', brightCyan: '#8bd4d7', brightWhite: '#f4f4f0',
-    },
+    theme: TERM_THEMES[activeTheme()],
     // Links written with terminal hyperlink codes follow the same Cmd+click rule.
     linkHandler: { activate: (e, uri) => { if (e.metaKey) openUri(uri, t); }, allowNonHttpProtocols: true },
   });
@@ -708,7 +732,7 @@ async function resumeBackgroundChats(ids) {
     if (running >= max) break;
     const row = findRow(id);
     if (!row || row.pending || liveTermFor(id) || external[id]) continue;
-    const r = await api('open', { sessionId: id, ...termSize() });
+    const r = await api('open', { sessionId: id, theme: activeTheme(), ...termSize() });
     if (!r.termId) continue;
     if (!terms.has(r.termId)) createTerm(r.termId, { ...r, status: 'starting' });
     running++;
@@ -1073,10 +1097,6 @@ setInterval(() => { for (const p of leaves()) if (p.mdPath && p.mdShown === p.md
 let find = null;
 let lastFindQuery = '';
 let findCase = false;
-const FIND_DECOR = {
-  matchBackground: '#5c4d24', matchBorder: '#7a6630', matchOverviewRuler: '#e0b050',
-  activeMatchBackground: '#d97757', activeMatchBorder: '#f0a080', activeMatchColorOverviewRuler: '#d97757',
-};
 
 function findKind(p) {
   if (p.mdPath && p.mdView) return 'md';
@@ -1167,7 +1187,7 @@ function runFind(mode) {
     const t = terms.get(find.termId);
     if (!t) return;
     if (!q) { t.search.clearDecorations(); t.term.clearSelection(); showFindCount(-1, 0); return; }
-    const opts = { caseSensitive: findCase, decorations: FIND_DECOR };
+    const opts = { caseSensitive: findCase, decorations: FIND_DECORS[activeTheme()] };
     // The add-on keeps its last results and does not notice an options change.
     if (mode === 'recase') { t.search.clearDecorations(); mode = 'type'; }
     // Upward is findPrevious; typing starts from the newest output.
@@ -2030,7 +2050,7 @@ async function openSession(id, opts = {}) {
     focusPane(pane, opts);
     return;
   }
-  const r = await api('open', { sessionId: id, ...termSize(pane), fork: opts.fork, force: opts.force, mkdir: opts.mkdir });
+  const r = await api('open', { sessionId: id, theme: activeTheme(), ...termSize(pane), fork: opts.fork, force: opts.force, mkdir: opts.mkdir });
   const target = isAttached(pane) ? pane : activePane;
   if (r.error) return setNotice(target, 'Could not open this chat', r.error, [['OK', () => dismissNotice(target)]]);
   if (r.missingCwd) {
@@ -2057,7 +2077,7 @@ async function openSession(id, opts = {}) {
 async function newChat(cwd) {
   closeMenus();
   const pane = freshPane();
-  const r = await api('open', { cwd, ...termSize(pane) });
+  const r = await api('open', { cwd, theme: activeTheme(), ...termSize(pane) });
   const target = isAttached(pane) ? pane : activePane;
   if (r.error) return setNotice(target, 'Could not start a chat', r.error, [['OK', () => dismissNotice(target)]]);
   const created = terms.get(r.termId) || createTerm(r.termId, { ...r, cwd, status: 'starting' });
@@ -2125,10 +2145,20 @@ function toggleSidebar() {
   savePrefs({ sidebarHidden: !prefs.sidebarHidden });
   applyChrome();
 }
+function applyTheme() {
+  const theme = activeTheme();
+  document.documentElement.dataset.theme = theme;
+  for (const t of terms.values()) t.term.options.theme = TERM_THEMES[theme];
+  native('theme:' + theme); // window background and title bar controls
+}
+systemDark.addEventListener('change', () => { if (prefs.theme === 'system') applyTheme(); });
 function applyChrome() {
+  applyTheme();
   document.body.classList.toggle('no-sidebar', !!prefs.sidebarHidden);
   $('btn-sidebar-2').hidden = !prefs.sidebarHidden;
   document.documentElement.style.setProperty('--side-w', prefs.sidebarWidth + 'px');
+  // Interface text scales from its 13.5px base; terminals have their own size.
+  document.documentElement.style.setProperty('--ui-scale', String((Number(prefs.uiFontSize) || 13.5) / 13.5));
 }
 
 // ---------- menus ----------
@@ -2257,7 +2287,19 @@ function settingsPopover() {
     pop.append(f);
     if (hint) pop.append(el('div', 'hint', hint));
   };
-  const f = el('label', 'field', 'Font');
+  const themeField = el('label', 'field', 'Appearance');
+  const themeSel = el('select');
+  for (const [k, label] of [['system', 'Match macOS'], ['dark', 'Dark'], ['light', 'Light']]) {
+    const o = el('option', '', label); o.value = k; themeSel.append(o);
+  }
+  themeSel.value = prefs.theme;
+  themeSel.onchange = () => { savePrefs({ theme: themeSel.value }); applyTheme(); };
+  themeField.append(themeSel);
+  pop.append(themeField);
+  pop.append(el('div', 'hint', 'Chats use the matching Claude Code theme. Chats already running switch when reopened.'));
+  num('Interface text size', 'uiFontSize', 11, 17, 0.5, applyChrome);
+  pop.append(el('div', 'hint', 'Sidebar, tabs, menus and Markdown previews.'));
+  const f = el('label', 'field', 'Terminal font');
   const sel = el('select');
   for (const [k, label] of [['system', 'SF Mono'], ['menlo', 'Menlo'], ['jetbrains', 'JetBrains Mono'], ['fira', 'Fira Code'], ['plex', 'IBM Plex Mono']]) {
     const o = el('option', '', label); o.value = k; sel.append(o);
@@ -2267,7 +2309,7 @@ function settingsPopover() {
   f.append(sel);
   pop.append(f);
   pop.append(el('div', 'hint', 'Terminals need a fixed-width font. Fonts you have not installed fall back to SF Mono.'));
-  num('Font size', 'fontSize', 10, 22, 0.5, applyTermPrefs);
+  num('Terminal font size', 'fontSize', 10, 22, 0.5, applyTermPrefs);
   num('Line spacing', 'lineHeight', 1, 1.8, 0.05, applyTermPrefs);
   check('Option key sends Alt', 'optionMeta', 'Off keeps Option typing characters such as @ and # on Turkish, German and other non-US keyboards. On enables shortcuts like Option+P.', applyTermPrefs);
   check('Show automated runs', 'showAutomated', data.hiddenAutomated ? `${data.hiddenAutomated} scripted or SDK runs are hidden.` : null, refreshSessions);

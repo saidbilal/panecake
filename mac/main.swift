@@ -62,14 +62,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                           backing: .buffered, defer: false)
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
-        window.backgroundColor = NSColor(calibratedRed: 0.10, green: 0.10, blue: 0.10, alpha: 1)
-        window.appearance = NSAppearance(named: .darkAqua)
+        applyTheme(UserDefaults.standard.string(forKey: "theme") ?? "dark")
         window.title = "Panecake"
         window.minSize = NSSize(width: 720, height: 420)
         window.contentView = web
         window.center()
         window.setFrameAutosaveName("PanecakeMain")
         window.makeKeyAndOrderFront(nil)
+    }
+
+    // The page reports its theme; it is remembered so the next launch opens in it
+    // instead of flashing the other color before the page loads.
+    func applyTheme(_ theme: String) {
+        let light = theme == "light"
+        window.appearance = NSAppearance(named: light ? .aqua : .darkAqua)
+        window.backgroundColor = light
+            ? NSColor(calibratedRed: 0.980, green: 0.976, blue: 0.965, alpha: 1)
+            : NSColor(calibratedRed: 0.10, green: 0.10, blue: 0.10, alpha: 1)
+        UserDefaults.standard.set(light ? "light" : "dark", forKey: "theme")
     }
 
     func buildMenu() {
@@ -155,6 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         guard let cmd = message.body as? String else { return }
         if cmd == "drag", let e = web.lastMouseDown { window.performDrag(with: e) }
         else if cmd == "zoom" { window.performZoom(nil) }
+        else if cmd.hasPrefix("theme:") { applyTheme(String(cmd.dropFirst(6))) }
     }
 
     // Links never navigate the app window away from the UI.

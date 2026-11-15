@@ -479,9 +479,24 @@ const termList = () => [...terms.values()].map((t) => ({
   kind: t.kind, label: t.label || null, project: projectOf(t.cwd).path, startedAt: t.startedAt,
 }));
 
-function startTerm({ sessionId, cwd, fork, cols, rows }) {
+// Claude Code draws with its own palette, so a chat started while Panecake is
+// light or dark gets the matching Claude Code theme for that run only, through
+// --settings; the user's settings file is not touched. A theme the user picked
+// in the same family, such as light-daltonized, is kept.
+function claudeTheme() {
+  try { return String(JSON.parse(fs.readFileSync(path.join(HOME, '.claude/settings.json'), 'utf8')).theme || ''); } catch { return ''; }
+}
+function themeArgs(appTheme) {
+  if (appTheme !== 'light' && appTheme !== 'dark') return [];
+  const mine = claudeTheme();
+  const isLight = mine.startsWith('light');
+  if (appTheme === 'light' ? isLight : mine && !isLight) return [];
+  return ['--settings', JSON.stringify({ theme: appTheme })];
+}
+
+function startTerm({ sessionId, cwd, fork, cols, rows, theme }) {
   const isNew = !sessionId;
-  const args = [];
+  const args = themeArgs(theme);
   let id = sessionId;
   if (isNew) { id = crypto.randomUUID(); args.push('--session-id', id); }
   else { args.push('--resume', sessionId); if (fork) args.push('--fork-session'); }
@@ -701,7 +716,7 @@ async function api(req, res, url) {
       return send(res, 200, { ok: true });
     }
     case 'open': {
-      const { sessionId, fork, force, mkdir, cols, rows } = body;
+      const { sessionId, fork, force, mkdir, cols, rows, theme } = body;
       if (sessionId && !UUID.test(sessionId)) return send(res, 400, { error: 'bad session id' });
       const already = !fork && [...terms.values()].find((t) => t.sessionId === sessionId && sessionId);
       if (already) return send(res, 200, { termId: already.termId, sessionId: already.sessionId, pid: already.pid, kind: already.kind, project: projectOf(already.cwd).path, cwd: already.cwd });
@@ -713,7 +728,7 @@ async function api(req, res, url) {
       }
       const ext = sessionId && !fork && !force ? registry.get(sessionId) : null;
       if (ext) return send(res, 200, { conflict: { where: whereLabel(ext.entrypoint), pid: ext.pid, status: ext.status } });
-      const t = startTerm({ sessionId, cwd, fork, cols, rows });
+      const t = startTerm({ sessionId, cwd, fork, cols, rows, theme });
       // Anything opened here stays in the sidebar, whatever kind of run started it.
       const mark = t.sessionId || sessionId;
       if (mark && !state.opened?.[mark]) { (state.opened ||= {})[mark] = 1; saveState(); }
