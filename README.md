@@ -9,7 +9,11 @@ grid, and terminals next to them.
 
 ![Panecake with three chats in a grid](docs/screenshot.png)
 
-https://github.com/user-attachments/assets/1df122a0-8cf2-482b-baef-7b7aacd94583
+
+
+https://github.com/user-attachments/assets/26cd6efd-a783-47e1-b60a-485b16eb788c
+
+
 
 ## Why I needed it
 
