@@ -4,6 +4,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NODE="$(command -v node)"
+VERSION="$("$NODE" -p "require('$ROOT/package.json').version")"
 APP="$HOME/Applications/Panecake.app"
 BUILD="$ROOT/build"
 mkdir -p "$BUILD" "$HOME/Applications"
@@ -31,7 +32,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key><string>Panecake</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSAppleEventsUsageDescription</key><string>Opens a chat in Terminal when you ask it to.</string>

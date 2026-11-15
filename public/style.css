@@ -67,8 +67,6 @@ body.no-sidebar #sidebar { display: none; }
 .row.child { margin-left: 13px; padding-left: 14px; }
 .row.child::before { content: ""; position: absolute; left: 3px; top: -1px; height: 17px; width: 8px; border-left: 1px solid #484848; border-bottom: 1px solid #484848; border-bottom-left-radius: 5px; }
 .row.child.has-next::after { content: ""; position: absolute; left: 3px; top: 0; bottom: 0; border-left: 1px solid #484848; }
-.row.shown { background: #262626; box-shadow: inset 0 0 0 1px #363636; }
-.row.active.shown { background: var(--active); box-shadow: none; }
 .row .row-icon { width: 15px; height: 15px; color: var(--text-2); margin-right: 1px; }
 .row .row-close { width: 20px; height: 18px; display: none; border-radius: 4px; align-items: center; justify-content: center; flex: none; color: var(--text-2); }
 .row .row-close svg { width: 12px; height: 12px; }
@@ -89,13 +87,32 @@ body.no-sidebar #sidebar { display: none; }
 footer { flex: none; height: 44px; display: flex; align-items: center; padding: 0 8px 0 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
 #live-summary { flex: 1; }
 
-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+main { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; }
 #titlebar { height: 44px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 12px 0 18px; border-bottom: 1px solid var(--line); }
 body.no-sidebar #titlebar { padding-left: 84px; }
 .title-wrap { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; white-space: nowrap; overflow: hidden; }
 #title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
 #subtitle { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
 .actions { display: flex; gap: 2px; }
+
+#tabbar { flex: none; height: 36px; display: flex; align-items: center; gap: 3px; padding: 0 8px; border-bottom: 1px solid var(--line); background: var(--bg); overflow-x: auto; scrollbar-width: none; }
+#tabbar::-webkit-scrollbar { display: none; }
+/* With a single tab the strip only appears during a drag, over the top of the grid. */
+#tabbar.overlay { position: absolute; top: 44px; left: 0; right: 0; z-index: 8; box-shadow: 0 10px 24px rgba(0,0,0,.4); animation: tabbar-in .16s cubic-bezier(.2,.7,.3,1); }
+@keyframes tabbar-in { from { opacity: 0; transform: translateY(-6px); } }
+.tab { display: flex; align-items: center; gap: 6px; height: 26px; min-width: 64px; max-width: 220px; flex: 0 1 auto; padding: 0 4px 0 10px; border-radius: 6px; color: var(--muted); font-size: 12.5px; transition: background-color .15s, color .15s; }
+.tab:hover { background: var(--hover); color: var(--text-2); }
+.tab.active { background: var(--active); color: var(--text); }
+.tab .status { width: 12px; margin-right: -2px; }
+.tab-label { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tab-count { flex: none; min-width: 16px; padding: 0 4px; border-radius: 4px; background: #2e2e2e; color: var(--text-2); font-size: 10.5px; line-height: 16px; text-align: center; }
+.tab.active .tab-count { background: #424242; }
+.tab-close { flex: none; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; border-radius: 4px; color: var(--text-2); opacity: 0; }
+.tab-close svg { width: 11px; height: 11px; }
+.tab:hover .tab-close, .tab.active .tab-close { opacity: 1; }
+.tab-close:hover { background: #474747; color: var(--text); }
+.tab-new { flex: none; width: 26px; height: 26px; }
+.tab-slot { flex: none; height: 26px; display: flex; align-items: center; padding: 0 12px; border: 1px dashed #4a4a4a; border-radius: 6px; color: var(--muted); font-size: 12.5px; }
 
 #stage { position: relative; flex: 1; min-height: 0; }
 #terms { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
@@ -110,6 +127,8 @@ body.no-sidebar #titlebar { padding-left: 84px; }
 .split.v > .divider::after { inset: -3px 0; cursor: row-resize; }
 .divider:hover, .divider.dragging { background: #555; }
 .pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+/* Drawn above the pane's content and animated by flashPane(); opacity only, so it stays smooth. */
+.pane-ring { position: absolute; inset: 0; z-index: 9; pointer-events: none; opacity: 0; box-shadow: inset 0 0 0 2px var(--accent), inset 0 0 22px rgba(217,119,87,.28); }
 .pane-head { flex: none; height: 28px; display: flex; align-items: center; gap: 6px; padding: 0 4px 0 12px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--line); cursor: grab; }
 .pane.active > .pane-head { color: var(--text); box-shadow: inset 0 -1.5px 0 var(--accent); }
 .pane-head .pane-title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -179,7 +198,7 @@ body.multi .termhost { padding: 6px 2px 2px 10px; }
 .md-body img { max-width: 100%; height: auto; border-radius: 6px; }
 .md-body hr { border: 0; border-top: 1px solid var(--line); margin: 1.6em 0; }
 .md-body table { border-collapse: collapse; display: block; overflow-x: auto; }
-.md-body th, .md-body td { border: 1px solid var(--line); padding: 6px 11px; text-align: left; }
+.md-body th, .md-body td { border: 1px solid var(--line); padding: 6px 11px; text-align: left; overflow-wrap: break-word; }
 .md-body th { background: #242424; font-weight: 600; }
 .md-missing { padding: 40px; text-align: center; color: var(--muted); }
 
@@ -204,3 +223,9 @@ body.multi .termhost { padding: 6px 2px 2px 10px; }
 .hint { font-size: 11.5px; color: var(--muted); margin: -6px 0 11px; line-height: 1.4; }
 
 #rename-input { width: 100%; height: 30px; background: #1e1e1e; border: 1px solid #555; border-radius: 6px; outline: 0; color: var(--text); font: inherit; padding: 0 9px; user-select: text; -webkit-user-select: text; }
+#btn-update { flex: none; height: 24px; padding: 0 10px; margin-right: 4px; border-radius: 12px; font-size: 12px; color: var(--accent); border: 1px solid rgba(217,119,87,.45); }
+#btn-update:hover { background: rgba(217,119,87,.14); }
+.update-title { color: var(--text); font-weight: 600; margin-bottom: 4px; }
+.hint.update-sub { margin: 0 0 8px; }
+.update-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.update-actions .btn { height: 28px; padding: 0 11px; font-size: 12.5px; }

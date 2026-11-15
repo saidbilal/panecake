@@ -38,6 +38,12 @@ settings. When Claude Code updates, Panecake gets the update for free.
 - **Search (⌘K).** Searches titles and the text inside chats. Open any result to
   resume it where it left off.
 - **Grid.** Drag chats from the sidebar onto any edge of a pane to split it.
+- **Tabs (⌘T).** Drag a chat, terminal or pane to the top of the grid to start a
+  new tab, or onto a tab to add it there. Hold over a tab to open it and place the
+  item exactly. Drop a tab on the middle of another tab to merge their grids.
+  Clicking a chat in the sidebar goes to the tab that shows it, or
+  opens it in a new tab. Closing a tab leaves its chats running; stopping a chat
+  closes its tab.
 - **Terminals (⌘J).** A shell in the active chat's folder. Running programs get a
   green dot in the sidebar.
 - **⌘-click.** Paths and links in any terminal: folders and files show in Finder
@@ -69,6 +75,21 @@ run `npm run build` again. macOS may ask whether Terminal can modify apps.
 To run only the server and use your browser instead, run `npm start` and open the
 URL it prints.
 
+## Updating
+
+When a new release is out, an **Update** button appears at the bottom of the
+sidebar. It opens a terminal in Panecake's folder with the update command typed
+in; press Return, then quit and reopen Panecake. To update by hand:
+
+```sh
+cd panecake
+git pull
+npm run build
+```
+
+Versions before 0.2.0 have no Update button, so update those by hand once.
+Watch the repository's releases on GitHub to hear about new versions.
+
 ## Shortcuts
 
 | Keys | Action |
@@ -80,6 +101,8 @@ URL it prints.
 | ⌘B | Show or hide the sidebar |
 | ⌘⌥↑ / ⌘⌥↓ | Previous or next chat in the sidebar |
 | ⌘⌥← / ⌘⌥→ | Move between panes |
+| ⌘T | New tab |
+| ⌘1–⌘9, ⌘⇧[ / ⌘⇧] | Switch tabs |
 | ⌘[ / ⌘] | Back or forward through what you opened |
 | ⌘-click | Open a path or link from a terminal |
 
@@ -91,6 +114,9 @@ URL it prints.
 - **Local only.** The server listens on `127.0.0.1`, requires a token created at
   each launch, and checks the Host and WebSocket Origin headers, because it can type
   into shells.
+- **One outside request: the update check.** At launch and twice a day, Panecake
+  asks GitHub for its newest release number. Nothing about you or your chats is
+  sent. Turn it off in Settings.
 - **Clicks never launch anything.** ⌘-click on a file selects it in Finder instead
   of opening it, including app bundles.
 - **No network requests from previews.** Markdown is sanitized with DOMPurify, and

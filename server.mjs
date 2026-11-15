@@ -71,7 +71,7 @@ function findClaude() {
 const CLAUDE = findClaude();
 
 // ---------- persisted state ----------
-const DEFAULT_STATE = { titles: {}, hidden: {}, hiddenProjects: {}, prefs: {} };
+const DEFAULT_STATE = { titles: {}, hidden: {}, hiddenProjects: {}, prefs: {}, liveChats: [] };
 let state = DEFAULT_STATE;
 try { state = { ...DEFAULT_STATE, ...JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) }; } catch {}
 let saveTimer;
@@ -83,6 +83,38 @@ function saveState() {
     });
   }, 300);
 }
+
+// ---------- update check ----------
+// Asks GitHub for the newest release so the sidebar can say an update exists.
+// The request carries only a generic User-Agent; nothing about the user or their
+// chats is sent. The reply is untrusted: only a plain version number is kept, and
+// the release link is built here rather than taken from the reply.
+const UPDATE_REPO = 'saidbilal/panecake';
+const VERSION = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version; } catch { return '0.0.0'; } })();
+const IS_GIT = fs.existsSync(path.join(ROOT, '.git'));
+const UPDATE_CMD = 'git pull --ff-only && npm run build && echo && echo "Updated. Quit Panecake (⌘Q) and open it again."';
+let update = null; // { version, url } once a newer release is found
+const semver = (v) => { const m = /^v?(\d{1,6})\.(\d{1,6})\.(\d{1,6})$/.exec(String(v || '')); return m ? m.slice(1).map(Number) : null; };
+const newer = (a, b) => { for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i]; return false; };
+async function checkForUpdate() {
+  if (process.env.PANECAKE_NO_UPDATE_CHECK || state.prefs.updateCheck === false) return;
+  try {
+    // PANECAKE_UPDATE_FEED lets tests point this at a local stand-in for GitHub.
+    const r = await fetch(process.env.PANECAKE_UPDATE_FEED || `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`, {
+      headers: { 'user-agent': 'Panecake-update-check', accept: 'application/vnd.github+json' },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) return;
+    const latest = semver((await r.json()).tag_name);
+    const mine = semver(VERSION);
+    if (!latest || !mine || !newer(latest, mine)) return;
+    const version = latest.join('.');
+    if (update?.version === version) return;
+    update = { version, url: `https://github.com/${UPDATE_REPO}/releases/tag/v${version}` };
+    broadcast({ t: 'update', update: updateInfo() });
+  } catch {}
+}
+const updateInfo = () => (update ? { ...update, current: VERSION, canRun: IS_GIT } : null);
 
 // ---------- transcript index ----------
 const HEAD = 128 * 1024;
@@ -422,6 +454,7 @@ async function tickLive() {
       if (r.sessionId !== t.sessionId) { t.sessionId = r.sessionId; moved = true; }
     }
   }
+  if (moved) rememberLiveChats();
   const payload = JSON.stringify({ terms: termList(), external: externalLive() });
   if (payload !== lastLive) {
     lastLive = payload;
@@ -485,11 +518,27 @@ function registerTerm(p, fields) {
   });
   p.onExit(({ exitCode }) => {
     terms.delete(termId);
+    rememberLiveChats();
     broadcast({ t: 'exit', id: termId, code: exitCode, evicted: t.evicted, sessionId: t.sessionId, kind: t.kind });
     announceChanged();
   });
+  rememberLiveChats();
   announceChanged();
   return t;
+}
+
+// The chats running at quit, so the next launch can resume the ones no pane shows.
+// Quitting stops every chat, so the list stays frozen once shutdown begins.
+let shuttingDown = false;
+function rememberLiveChats() {
+  if (shuttingDown) return;
+  const ids = [...terms.values()]
+    .filter((t) => t.kind === 'claude' && t.sessionId)
+    .sort((a, b) => b.lastViewed - a.lastViewed)
+    .map((t) => t.sessionId);
+  if (ids.join() === (state.liveChats || []).join()) return;
+  state.liveChats = ids;
+  saveState();
 }
 
 // Each claude process holds memory, so idle chats beyond the limit are closed.
@@ -643,11 +692,14 @@ async function api(req, res, url) {
     case 'terms':
       return send(res, 200, { terms: termList(), external: externalLive() });
     case 'state':
-      return send(res, 200, { prefs: state.prefs, hiddenProjects: state.hiddenProjects });
-    case 'prefs':
+      return send(res, 200, { prefs: state.prefs, hiddenProjects: state.hiddenProjects, liveChats: state.liveChats || [], version: VERSION, update: updateInfo() });
+    case 'prefs': {
+      const wasOff = state.prefs.updateCheck === false;
       state.prefs = { ...state.prefs, ...body };
       saveState();
+      if (wasOff && state.prefs.updateCheck !== false) checkForUpdate();
       return send(res, 200, { ok: true });
+    }
     case 'open': {
       const { sessionId, fork, force, mkdir, cols, rows } = body;
       if (sessionId && !UUID.test(sessionId)) return send(res, 400, { error: 'bad session id' });
@@ -668,9 +720,14 @@ async function api(req, res, url) {
       return send(res, 200, { termId: t.termId, sessionId: t.sessionId, pid: t.pid, kind: t.kind, project: projectOf(t.cwd).path, cwd: t.cwd });
     }
     case 'shell': {
-      const { cwd, cols, rows } = body;
+      // `update` opens the shell in Panecake's own folder with the update command
+      // typed but not run, so the user sees it and presses Return themselves.
+      const { cols, rows } = body;
+      const cwd = body.update ? ROOT : body.cwd;
+      if (body.update && !IS_GIT) return send(res, 200, { error: 'This copy of Panecake was not installed with git clone, so it cannot update itself. Download the new release from GitHub instead.' });
       if (!cwd || !path.isAbsolute(cwd) || !fs.existsSync(cwd)) return send(res, 200, { error: `Folder not found: ${cwd}` });
       const t = startShell({ cwd, cols, rows });
+      if (body.update) t.proc.write(UPDATE_CMD);
       return send(res, 200, { termId: t.termId, pid: t.pid, cwd: t.cwd, kind: t.kind, project: projectOf(cwd).path, startedAt: t.startedAt });
     }
     case 'close': {
@@ -813,6 +870,12 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 function shutdown() {
+  shuttingDown = true;
+  // A save still waiting on its timer would be lost when the process exits.
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    try { fs.writeFileSync(STATE_FILE + '.tmp', JSON.stringify(state, null, 1)); fs.renameSync(STATE_FILE + '.tmp', STATE_FILE); } catch {}
+  }
   for (const t of terms.values()) { try { t.proc.kill(); } catch {} }
   setTimeout(() => process.exit(0), 300);
 }
@@ -829,6 +892,8 @@ server.listen(Number(process.env.PANECAKE_PORT) || 0, '127.0.0.1', async () => {
   watchProjects();
   setInterval(tickLive, 1000);
   setInterval(() => fullScan().catch(() => {}), 5 * 60 * 1000);
+  setTimeout(checkForUpdate, 5000);
+  setInterval(checkForUpdate, 12 * 60 * 60 * 1000);
   await readRegistry();
   fullScan().catch((e) => { console.error(e); indexReady = true; announceChanged(); });
 });

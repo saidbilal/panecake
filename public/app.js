@@ -20,7 +20,7 @@ const native = (msg) => { try { window.webkit?.messageHandlers?.panecake?.postMe
 
 const PREF_DEFAULTS = {
   fontSize: 13.5, lineHeight: 1.3, fontFamily: 'system', optionMeta: false, showAutomated: false, showHidden: false,
-  maxLive: 10, sidebarWidth: 300, sidebarHidden: false, collapsed: {}, expanded: {}, folds: {}, lastSession: null, layout: null, lastCwd: null,
+  maxLive: 10, updateCheck: true, skipUpdate: null, sidebarWidth: 300, sidebarHidden: false, collapsed: {}, expanded: {}, folds: {}, lastSession: null, layout: null, lastCwd: null,
 };
 const FONTS = {
   system: 'ui-monospace, "SF Mono", Menlo, monospace',
@@ -62,6 +62,7 @@ function connect() {
     else if (m.t === 'exit') onExit(m);
     else if (m.t === 'live') onLive(m);
     else if (m.t === 'changed') scheduleRefresh();
+    else if (m.t === 'update') showUpdate(m.update);
   };
   ws.onclose = () => setTimeout(connect, 1000);
   ws.onopen = async () => {
@@ -113,7 +114,11 @@ function createTerm(termId, info) {
   t = { termId, term, fit, search, host, box, sessionId: info.sessionId || null, cwd: info.cwd, pid: info.pid, status: info.status, kind: info.kind || 'claude', project: info.project, label: info.label || null, startedAt: info.startedAt || Date.now(), muted: false, opened: false };
   terms.set(termId, t);
 
-  term.onData((d) => { if (!t.muted) sendInput(termId, d); });
+  term.onData((d) => {
+    if (t.muted) return;
+    sendInput(termId, d);
+    if (curTab.stepped && activePane.termId === termId) curTab.stepped = false; // typed in, so it stays
+  });
   term.onBinary((d) => { if (!t.muted) sendInput(termId, d); });
   term.attachCustomKeyEventHandler((e) => handleTermKey(e, t));
 
@@ -174,31 +179,41 @@ function fitTerm(t, nudge) {
 // ---------- grid ----------
 // The right side is a tree of splits whose leaves are panes. A pane shows one
 // terminal, or a notice or placeholder. Terminals not in a pane keep running.
+// Each tab holds its own tree. `activePane` belongs to the tab on screen; other
+// tabs remember theirs in `tab.active`.
 let nextPaneId = 1;
-const newLeaf = () => ({ type: 'leaf', id: nextPaneId++, termId: null, sessionId: null, notice: null, ended: null, mdPath: null });
+// `lazy` marks a chat pane in a background tab whose process starts when the tab is shown.
+const newLeaf = () => ({ type: 'leaf', id: nextPaneId++, termId: null, sessionId: null, notice: null, ended: null, mdPath: null, lazy: false });
 const isEmptyPane = (p) => !p.termId && !p.notice && !p.ended && !p.mdPath;
-const CONTENT_KEYS = ['termId', 'sessionId', 'notice', 'ended', 'mdPath'];
-let root = newLeaf();
-let activePane = root;
+const CONTENT_KEYS = ['termId', 'sessionId', 'notice', 'ended', 'mdPath', 'lazy'];
+let nextTabId = 1;
+const newTab = (root = newLeaf()) => ({ id: nextTabId++, root, active: null });
+let tabs = [newTab()];
+let curTab = tabs[0];
+let activePane = curTab.root;
 
-const leaves = (n = root) => (n.type === 'leaf' ? [n] : [...leaves(n.a), ...leaves(n.b)]);
-function parentOf(target, n = root) {
+const leaves = (n = curTab.root) => (n.type === 'leaf' ? [n] : [...leaves(n.a), ...leaves(n.b)]);
+const everyLeaf = () => tabs.flatMap((t) => leaves(t.root));
+const tabOf = (p) => tabs.find((t) => leaves(t.root).includes(p));
+function parentOf(target, n = curTab.root) {
   if (n.type === 'leaf') return null;
   if (n.a === target || n.b === target) return n;
   return parentOf(target, n.a) || parentOf(target, n.b);
 }
-function replaceNode(target, node, parent = parentOf(target)) {
-  if (!parent) root = node;
+function replaceNode(target, node, parent) {
+  if (!parent) { const tab = tabs.find((t) => t.root === target); if (tab) tab.root = node; }
   else if (parent.a === target) parent.a = node;
   else parent.b = node;
 }
-const paneShowingTerm = (termId) => leaves().find((p) => p.termId === termId);
-const paneShowingChat = (id) => leaves().find((p) => p.sessionId === id);
-const isAttached = (p) => leaves().includes(p);
+// These look across every tab. The `visible` ones only see the tab on screen.
+const paneShowingTerm = (termId) => everyLeaf().find((p) => p.termId === termId);
+const paneShowingChat = (id) => everyLeaf().find((p) => p.sessionId === id);
+const visiblePaneForTerm = (termId) => leaves().find((p) => p.termId === termId);
+const isAttached = (p) => everyLeaf().includes(p);
 
 function splitLeaf(target, zone) {
   const fresh = newLeaf();
-  const parent = parentOf(target);
+  const parent = parentOf(target, tabOf(target)?.root);
   const mk = (dir, a, b) => ({ type: 'split', dir, ratio: 0.5, a, b });
   const nodes = {
     left: () => mk('h', fresh, target),
@@ -217,13 +232,186 @@ function splitLeaf(target, zone) {
 
 function clearPane(p) { for (const k of CONTENT_KEYS) p[k] = null; }
 
-// Takes a pane out of the grid. The last pane stays and simply empties.
+// Takes a pane out of its tab's grid. A tab's last pane stays and simply empties.
 function removeLeaf(p) {
-  const parent = parentOf(p);
-  if (!parent) { clearPane(p); return; }
+  const tab = tabOf(p);
+  if (!tab) return null;
+  const parent = parentOf(p, tab.root);
+  if (!parent) { clearPane(p); return tab; }
   const sibling = parent.a === p ? parent.b : parent.a;
-  replaceNode(parent, sibling);
+  replaceNode(parent, sibling, parentOf(parent, tab.root));
   if (activePane === p) activePane = leaves(sibling)[0];
+  if (tab.active === p) tab.active = leaves(sibling)[0];
+  return tab;
+}
+
+// ---------- tabs ----------
+const isEmptyTab = (tab) => tab.root.type === 'leaf' && isEmptyPane(tab.root);
+
+// Makes a tab current without drawing it; callers render afterwards.
+function switchTab(tab) {
+  if (!tab || tab === curTab) return;
+  curTab.active = activePane;
+  curTab = tab;
+  activePane = tab.active && leaves().includes(tab.active) ? tab.active : leaves()[0];
+}
+
+function showTab(tab, focus = true) {
+  switchTab(tab);
+  // Whatever the tab shows is now seen.
+  for (const p of leaves()) { if (p.sessionId) unread.delete(p.sessionId); if (p.termId) unread.delete('term:' + p.termId); }
+  renderGrid();
+  setActive(activePane, focus);
+}
+
+// A tab whose content was moved out is no longer needed, unless it is the one on screen.
+function dropEmptied(touched) {
+  const before = tabs.length;
+  tabs = tabs.filter((t) => t === curTab || !touched.has(t) || !isEmptyTab(t));
+  if (tabs.length !== before) renderTabs();
+}
+
+function addTab(tab = newTab()) {
+  tabs.push(tab);
+  return tab;
+}
+
+function closeTab(tab) {
+  if (tabs.length < 2) return;
+  const i = tabs.indexOf(tab);
+  if (i < 0) return;
+  tabs.splice(i, 1);
+  if (tab === curTab) {
+    curTab = tabs[Math.min(i, tabs.length - 1)];
+    activePane = curTab.active && leaves().includes(curTab.active) ? curTab.active : leaves()[0];
+    showTab(curTab);
+  } else renderGrid();
+}
+
+// Where a chat or terminal that is not open in any tab goes: its own new tab,
+// or the tab on screen when that one is still empty.
+function freshPane() {
+  if (isEmptyTab(curTab)) return curTab.root;
+  return addTab().root;
+}
+
+function stepTab(dir) {
+  if (tabs.length < 2) return;
+  showTab(tabs[(tabs.indexOf(curTab) + dir + tabs.length) % tabs.length]);
+}
+
+// Where something dropped on a tab goes: an empty pane if there is one, otherwise
+// half of the largest pane, split along its longer side. Four drops make a 2x2 grid.
+function slotIn(tab) {
+  const all = leaves(tab.root);
+  const empty = all.find(isEmptyPane);
+  if (empty) return empty;
+  let best = null;
+  const walk = (n, w, h) => {
+    if (n.type === 'leaf') { if (!best || w * h > best.w * best.h + 1) best = { n, w, h }; return; }
+    if (n.dir === 'h') { walk(n.a, w * n.ratio, h); walk(n.b, w * (1 - n.ratio), h); }
+    else { walk(n.a, w, h * n.ratio); walk(n.b, w, h * (1 - n.ratio)); }
+  };
+  walk(tab.root, $('stage').clientWidth || 1200, $('stage').clientHeight || 800);
+  return splitLeaf(best.n, best.w >= best.h * 1.1 ? 'right' : 'bottom');
+}
+
+function tabLead(tab) {
+  const all = leaves(tab.root);
+  return all.find((p) => !isEmptyPane(p)) || all[0];
+}
+
+function tabStatus(tab) {
+  const ps = leaves(tab.root);
+  const ts = ps.map((p) => terms.get(p.termId)).filter((t) => t && t.kind !== 'shell');
+  if (ts.some((t) => t.status === 'busy' || t.status === 'starting')) return el('span', 'spin');
+  if (ts.some((t) => t.status === 'waiting')) return el('span', 'dot waiting');
+  if (tab !== curTab && ps.some((p) => (p.sessionId && unread.has(p.sessionId)) || (p.termId && unread.has('term:' + p.termId)))) return el('span', 'dot unread');
+  return null;
+}
+
+function tabEl(tab) {
+  if (tab.el) return tab.el;
+  const n = el('div', 'tab');
+  n.tab = tab;
+  n.onclick = () => showTab(tab);
+  n.addEventListener('mousedown', (e) => { if (tabs.length > 1) beginDrag(e, { type: 'tab', tab, title: n.querySelector('.tab-label')?.textContent || 'Tab' }); });
+  n.addEventListener('auxclick', (e) => { if (e.button === 1) closeTab(tab); });
+  n.oncontextmenu = (e) => {
+    e.preventDefault();
+    showMenu(e.clientX, e.clientY, [
+      { label: 'New tab', fn: () => showTab(addTab()) },
+      ...(tabs.length > 1 ? [{ label: 'Close tab', fn: () => closeTab(tab) }] : []),
+    ]);
+  };
+  tab.el = n;
+  return n;
+}
+
+function renderTabs() {
+  const bar = $('tabbar');
+  // With one tab the strip stays out of the way, and floats in only while dragging.
+  const dragging = !!drag && drag.payload.type !== 'tab';
+  bar.hidden = tabs.length < 2 && !dragging;
+  bar.classList.toggle('overlay', tabs.length < 2);
+  if (bar.hidden) return;
+  const items = [];
+  for (const tab of tabs) {
+    const n = tabEl(tab);
+    const filled = leaves(tab.root).filter((p) => !isEmptyPane(p));
+    const lead = tabLead(tab);
+    const label = isEmptyPane(lead) ? 'New tab' : paneTitle(lead);
+    const status = tabStatus(tab);
+    const closable = tabs.length > 1;
+    n.classList.toggle('active', tab === curTab);
+    n.title = filled.map(paneTitle).join('\n');
+    // Rebuilt only when something shows a change, so a click in progress is not lost.
+    const sig = [label, filled.length, status?.className, closable].join('|');
+    if (n.sig !== sig) {
+      n.sig = sig;
+      const parts = [];
+      if (status) { const s = el('span', 'status'); s.append(status); parts.push(s); }
+      parts.push(el('span', 'tab-label', label));
+      if (filled.length > 1) parts.push(el('span', 'tab-count', String(filled.length)));
+      if (closable) {
+        const x = el('button', 'tab-close');
+        x.title = 'Close tab. Its chats keep running and stay in the sidebar.';
+        x.innerHTML = '<svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
+        x.onclick = (e) => { e.stopPropagation(); closeTab(tab); };
+        x.onmousedown = (e) => e.stopPropagation();
+        parts.push(x);
+      }
+      n.replaceChildren(...parts);
+    }
+    items.push(n);
+  }
+  if (dragging) items.push($('tab-slot') || Object.assign(el('div', 'tab-slot', 'New tab'), { id: 'tab-slot' }));
+  else {
+    let plus = $('tab-new');
+    if (!plus) {
+      plus = el('button', 'icon tab-new');
+      plus.id = 'tab-new';
+      plus.title = 'New tab (⌘T)';
+      plus.innerHTML = '<svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg>';
+      plus.onclick = () => showTab(addTab());
+    }
+    items.push(plus);
+  }
+  // Only reorder the strip when the set or order of tabs changed.
+  if (items.length !== bar.children.length || items.some((n, i) => bar.children[i] !== n)) bar.replaceChildren(...items);
+}
+
+// A short glow around a pane, so the eye finds it after a jump.
+function flashPane(p) {
+  if (!p?.el || !p.el.isConnected) return;
+  if (!p.ring) p.ring = el('div', 'pane-ring');
+  if (p.ring.parentNode !== p.el) p.el.append(p.ring);
+  for (const a of p.ring.getAnimations?.() || []) a.cancel();
+  p.ring.animate?.([
+    { opacity: 0, easing: 'cubic-bezier(.2,.7,.3,1)' },
+    { opacity: 1, offset: 0.28, easing: 'cubic-bezier(.45,0,.55,1)' },
+    { opacity: 0 },
+  ], { duration: 600 });
 }
 
 function ensurePaneEls(p) {
@@ -280,6 +468,7 @@ function panelFor(p) {
   }
   if (p.mdPath) return mdViewFor(p);
   if (p.termId && terms.has(p.termId)) return null;
+  if (p.lazy) return el('div', 'panel'); // its chat is starting
   if (p.ended) {
     const n = el('div', 'panel');
     const row = findRow(p.ended);
@@ -298,7 +487,8 @@ function panelFor(p) {
   const keys = el('dl', 'keys');
   for (const [k, v] of [
     ['⌘N', 'New chat'], ['⌘J', 'New terminal in the active folder'], ['⌘K', 'Search chats'], ['⌘F', 'Find in this pane'],
-    ['Drag a chat', 'Onto this area to build a grid'], ['⌘⌥↑ ⌘⌥↓', 'Previous or next chat in the sidebar'],
+    ['Drag a chat', 'Onto this area to build a grid, or to the top edge for a new tab'], ['⌘T', 'New tab'], ['⌘1–9 ⌘⇧[ ⌘⇧]', 'Switch tabs'],
+    ['⌘⌥↑ ⌘⌥↓', 'Previous or next chat in the sidebar'],
     ['⌘+click', 'A path or link in a terminal: Finder, browser, or .md preview'], ['⌘⌥← ⌘⌥→', 'Move between panes'], ['⌘[ ⌘]', 'Back or forward through what you opened'], ['⌘B', 'Toggle sidebar'],
   ]) keys.append(el('dt', '', k), el('dd', '', v));
   n.append(keys);
@@ -344,17 +534,31 @@ function renderGrid() {
       if (t.host.parentNode !== $('terms')) $('terms').append(t.host);
     }
   }
-  $('grid').replaceChildren(build(root));
+  $('grid').replaceChildren(build(curTab.root));
   all.forEach(renderPane);
-  if (!isAttached(activePane)) activePane = all[0];
+  if (!all.includes(activePane)) activePane = all[0];
   syncActive();
   sendVisible();
   saveLayout();
   // A find bar only makes sense while its pane still shows the same thing.
-  if (find && (!isAttached(find.pane) || find.pane.termId !== find.termId || find.pane.mdPath !== find.mdPath)) closeFind(false);
+  if (find && (!all.includes(find.pane) || find.pane.termId !== find.termId || find.pane.mdPath !== find.mdPath)) closeFind(false);
   requestAnimationFrame(() => { for (const p of leaves()) { const t = terms.get(p.termId); if (t) fitTerm(t); } });
   updateHeader();
+  renderTabs();
   renderList();
+  wakeLazy();
+}
+
+// Chats in a tab start their process the first time the tab is shown.
+let waking = Promise.resolve();
+function wakeLazy() {
+  const jobs = [];
+  for (const p of leaves()) {
+    if (!p.lazy) continue;
+    p.lazy = false;
+    if (p.sessionId) jobs.push(openSession(p.sessionId, { pane: p, quiet: true }));
+  }
+  if (jobs.length) waking = Promise.all(jobs);
 }
 
 function sendVisible() { wsSend({ t: 'visible', ids: leaves().map((p) => p.termId).filter(Boolean) }); }
@@ -391,11 +595,13 @@ function setActive(p, focus = true, fromHistory = false) {
 }
 
 // Puts a terminal in a pane. If another pane already shows it, that pane goes away.
+// The pane's tab comes to the front unless `quiet` is set, as when a background tab fills in.
 function displayIn(p, t, opts = {}) {
-  // A pane may also show this chat as ended, with no process behind it.
-  for (const other of leaves()) {
+  // A pane may also show this chat as ended, with no process behind it. Any tab counts.
+  const touched = new Set();
+  for (const other of everyLeaf()) {
     if (other === p) continue;
-    if (other.termId === t.termId || (t.sessionId && other.sessionId === t.sessionId)) removeLeaf(other);
+    if (other.termId === t.termId || (t.sessionId && other.sessionId === t.sessionId)) touched.add(removeLeaf(other));
   }
   if (!isAttached(p)) p = activePane;
   p.termId = t.termId;
@@ -403,19 +609,37 @@ function displayIn(p, t, opts = {}) {
   p.notice = null;
   p.ended = null;
   p.mdPath = null;
+  p.lazy = false;
+  if (opts.quiet) {
+    dropEmptied(touched);
+    renderGrid();
+    if (p === activePane) refocus();
+    return;
+  }
+  switchTab(tabOf(p));
+  dropEmptied(touched);
   activePane = p;
   renderGrid();
   setActive(p, true, opts.fromHistory);
+  if (opts.flash) flashPane(p);
 }
 
+// Brings a pane's tab forward and makes it the active pane.
+function focusPane(p, opts = {}) {
+  if (tabOf(p) !== curTab) { switchTab(tabOf(p)); activePane = p; renderGrid(); }
+  setActive(p, true, opts.fromHistory);
+  if (opts.flash) flashPane(p);
+}
+
+// Closing a tab's only pane closes the tab, when there is another to fall back on.
 function closePane(p) {
-  if (leaves().length < 2) return;
+  if (leaves().length < 2) { closeTab(curTab); return; }
   removeLeaf(p);
   renderGrid();
   refocus();
 }
 
-function serializeLayout(n = root) {
+function serializeLayout(n = curTab.root) {
   if (n.type === 'split') return { d: n.dir, r: n.ratio, a: serializeLayout(n.a), b: serializeLayout(n.b) };
   if (n.mdPath) return { md: n.mdPath };
   const t = terms.get(n.termId);
@@ -424,16 +648,20 @@ function serializeLayout(n = root) {
 let layoutTimer;
 function saveLayout() {
   clearTimeout(layoutTimer);
-  layoutTimer = setTimeout(() => savePrefs({ layout: serializeLayout() }), 200);
+  layoutTimer = setTimeout(() => savePrefs({ tabs: { list: tabs.map((t) => serializeLayout(t.root)), active: tabs.indexOf(curTab) } }), 200);
 }
 
-// Rebuilds the saved grid. Slots whose chat is gone or open elsewhere collapse.
+// Rebuilds the saved tabs. Slots whose chat is gone or open elsewhere collapse,
+// and a tab left with nothing goes away. Only the front tab's chats start now.
 async function restoreLayout() {
+  const seen = new Set();
   const usable = (n) => {
     if (n.d || n.md) return true;
-    if (n.t) return terms.has(n.t);
-    if (!n.s) return false;
-    return !!(findRow(n.s) || liveTermFor(n.s)) && !external[n.s];
+    const key = n.t ? 't:' + n.t : n.s ? 's:' + n.s : null;
+    if (!key || seen.has(key)) return false; // one place per chat or terminal
+    const ok = n.t ? terms.has(n.t) : !!(findRow(n.s) || liveTermFor(n.s)) && !external[n.s];
+    if (ok) seen.add(key);
+    return ok;
   };
   const build = (n) => {
     if (n.d) {
@@ -447,22 +675,45 @@ async function restoreLayout() {
     leaf.want = n;
     return leaf;
   };
-  const saved = prefs.layout || (prefs.lastSession ? { s: prefs.lastSession } : null);
-  const tree = saved && build(saved);
-  if (!tree) { renderGrid(); return; }
-  root = tree;
+  // Layouts saved before tabs existed hold a single tree.
+  const old = prefs.layout || (prefs.lastSession ? { s: prefs.lastSession } : null);
+  const saved = prefs.tabs?.list?.length ? prefs.tabs : old ? { list: [old], active: 0 } : null;
+  const front = saved ? Math.max(0, Math.min(saved.active | 0, saved.list.length - 1)) : 0;
+  const built = saved ? saved.list.map((tree, i) => ({ i, root: build(tree) })).filter((b) => b.root) : [];
+  if (!built.length) { renderGrid(); return; }
+  tabs = built.map((b) => newTab(b.root));
+  const pick = built.findIndex((b) => b.i >= front);
+  curTab = tabs[pick < 0 ? tabs.length - 1 : pick];
   activePane = leaves()[0];
-  renderGrid();
-  await Promise.all(leaves().map(async (leaf) => {
-    const w = leaf.want;
-    delete leaf.want;
-    if (w.md) { leaf.mdPath = w.md; return; }
-    if (w.t) { const t = terms.get(w.t); if (t) displayIn(leaf, t); return; }
-    await openSession(w.s, { pane: leaf });
-  }));
-  activePane = leaves()[0];
-  renderGrid();
+  for (const tab of tabs) {
+    for (const leaf of leaves(tab.root)) {
+      const w = leaf.want;
+      delete leaf.want;
+      if (w.md) leaf.mdPath = w.md;
+      else if (w.t) { leaf.termId = w.t; leaf.sessionId = terms.get(w.t)?.sessionId || null; }
+      else { leaf.sessionId = w.s; leaf.ended = w.s; leaf.lazy = true; }
+    }
+  }
+  renderGrid(); // starts the front tab's chats
+  await waking;
   setActive(activePane);
+}
+
+// Chats that were running at quit but sat in no pane come back running in the
+// background, as they were. Ones open in another app, or never sent a message, stay closed.
+async function resumeBackgroundChats(ids) {
+  const max = Number(prefs.maxLive) || 10;
+  let running = [...terms.values()].filter((t) => t.kind !== 'shell').length;
+  for (const id of ids) {
+    if (running >= max) break;
+    const row = findRow(id);
+    if (!row || row.pending || liveTermFor(id) || external[id]) continue;
+    const r = await api('open', { sessionId: id, ...termSize() });
+    if (!r.termId) continue;
+    if (!terms.has(r.termId)) createTerm(r.termId, { ...r, status: 'starting' });
+    running++;
+  }
+  scheduleRefresh();
 }
 
 // ---------- Cmd+click links in terminals ----------
@@ -719,7 +970,7 @@ function openMd(path, fromPane) {
   const existing = leaves().find((p) => p.mdPath);
   if (existing) existing.mdPath = path;
   else {
-    const from = fromPane && isAttached(fromPane) ? fromPane : activePane;
+    const from = fromPane && leaves().includes(fromPane) ? fromPane : activePane;
     const dest = splitLeaf(from, 'right');
     dest.mdPath = path;
   }
@@ -1017,11 +1268,83 @@ function beginDrag(e, payload) {
   window.addEventListener('mouseup', up, true);
 }
 function startDrag(payload) {
-  drag = { payload, target: null, zone: null };
+  drag = { payload, target: null, zone: null, tabHit: null, spring: null };
   closeMenus();
   $('drop-layer').hidden = false;
   $('drag-ghost').textContent = payload.title;
   $('drag-ghost').hidden = false;
+  renderTabs();
+}
+
+const inRect = (r, x, y) => x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+
+function showPreview(r, label) {
+  const prev = $('drop-preview');
+  prev.style.left = r.left + 'px';
+  prev.style.top = r.top + 'px';
+  prev.style.width = r.width + 'px';
+  prev.style.height = r.height + 'px';
+  prev.firstElementChild.textContent = label;
+  prev.firstElementChild.hidden = !label;
+  prev.hidden = false;
+}
+
+// Holding a drag over a tab opens it, so the item can be placed exactly.
+function springOpen(tab) {
+  if (tab === curTab || drag.spring?.tab === tab) return;
+  clearTimeout(drag.spring?.timer);
+  drag.spring = { tab, timer: setTimeout(() => { if (drag) showTab(tab, false); }, 600) };
+}
+
+// Over the tab strip: a tab takes the item into its grid, and the rest of the
+// strip makes a new tab. A dragged tab dropped on the middle of another tab joins
+// its grid; dropped near a tab's edge, it moves along the strip.
+function updateTabDrag(ev) {
+  const bar = $('tabbar');
+  if (bar.hidden || !inRect(bar.getBoundingClientRect(), ev.clientX, ev.clientY)) return false;
+  const src = drag.payload;
+  const els = [...bar.querySelectorAll('.tab')];
+  if (src.type === 'tab') {
+    const over = els.find((n) => n.tab !== src.tab && inRect(n.getBoundingClientRect(), ev.clientX, ev.clientY));
+    if (over) {
+      const r = over.getBoundingClientRect();
+      const f = (ev.clientX - r.left) / r.width;
+      if (f > 0.25 && f < 0.75) {
+        drag.tabHit = { kind: 'merge', tab: over.tab };
+        showPreview(r, 'Add to tab');
+        springOpen(over.tab);
+        return true;
+      }
+    }
+    const others = els.filter((n) => n.tab !== src.tab);
+    let index = others.findIndex((n) => { const r = n.getBoundingClientRect(); return ev.clientX < r.left + r.width / 2; });
+    if (index < 0) index = others.length;
+    const ref = others[index]?.getBoundingClientRect();
+    const last = others[others.length - 1]?.getBoundingClientRect();
+    const x = ref ? ref.left - 3 : last ? last.right + 1 : 0;
+    const br = els[0].getBoundingClientRect();
+    drag.tabHit = { kind: 'reorder', index };
+    showPreview({ left: x, top: br.top, width: 2, height: br.height }, '');
+    return true;
+  }
+  const hitEl = els.find((n) => inRect(n.getBoundingClientRect(), ev.clientX, ev.clientY));
+  const tab = hitEl?.tab;
+  // A pane already lives in its own tab, so dropping it there changes nothing.
+  if (tab && src.type === 'pane' && tabOf(src.pane) === tab) {
+    drag.tabHit = null;
+    $('drop-preview').hidden = true;
+    return true;
+  }
+  if (tab) {
+    drag.tabHit = { kind: 'tab', tab };
+    showPreview(hitEl.getBoundingClientRect(), tab === curTab ? 'Add to this tab' : 'Add to tab');
+    springOpen(tab);
+    return true;
+  }
+  const slot = bar.querySelector('.tab-slot');
+  drag.tabHit = { kind: 'new' };
+  showPreview(slot ? slot.getBoundingClientRect() : bar.getBoundingClientRect(), 'New tab');
+  return true;
 }
 function zoneAt(rect, x, y, leaf) {
   if (isEmptyPane(leaf)) return 'center';
@@ -1049,6 +1372,15 @@ function updateDrag(ev) {
   const g = $('drag-ghost');
   g.style.left = ev.clientX + 12 + 'px';
   g.style.top = ev.clientY + 10 + 'px';
+  drag.tabHit = null;
+  drag.target = null;
+  const overTabs = updateTabDrag(ev);
+  if (!drag.tabHit || drag.tabHit.tab !== drag.spring?.tab) { clearTimeout(drag.spring?.timer); drag.spring = null; }
+  // A dragged tab can go into the grid only once another tab has opened under it.
+  if (overTabs || (drag.payload.type === 'tab' && drag.payload.tab === curTab)) {
+    if (!overTabs) $('drop-preview').hidden = true;
+    return;
+  }
   let hit = null;
   for (const p of leaves()) {
     const r = p.el.getBoundingClientRect();
@@ -1057,7 +1389,9 @@ function updateDrag(ev) {
   const prev = $('drop-preview');
   const src = drag.payload.pane;
   // A lone pane has nowhere to go, and a pane onto itself means nothing.
-  if (!hit || hit.p === src) {
+  // A whole tab can split a pane or fill an empty one, but not swap with it.
+  const tabOntoFull = drag.payload.type === 'tab' && hit && !isEmptyPane(hit.p) && zoneAt(hit.r, ev.clientX, ev.clientY, hit.p) === 'center';
+  if (!hit || hit.p === src || tabOntoFull) {
     drag.target = null;
     prev.hidden = true;
     return;
@@ -1072,35 +1406,106 @@ function updateDrag(ev) {
   prev.style.height = fh * hit.r.height - 6 + 'px';
   const empty = isEmptyPane(hit.p);
   prev.firstElementChild.textContent = zone === 'center' ? (empty ? 'Open here' : src ? 'Swap' : 'Replace') : 'Split here';
+  prev.firstElementChild.hidden = false;
   prev.hidden = false;
 }
 function endDragUi() {
+  clearTimeout(drag?.spring?.timer);
   drag = null;
   $('drop-layer').hidden = true;
   $('drop-preview').hidden = true;
   $('drag-ghost').hidden = true;
+  renderTabs();
 }
+
+// Moves a dragged pane's content into `dest`, which may be in another tab.
+function movePaneTo(src, place) {
+  const content = Object.fromEntries(CONTENT_KEYS.map((k) => [k, src[k]]));
+  const from = removeLeaf(src);
+  const dest = place();
+  Object.assign(dest, content);
+  switchTab(tabOf(dest));
+  dropEmptied(new Set([from]));
+  activePane = dest;
+  renderGrid();
+  setActive(dest);
+  flashPane(dest);
+}
+
+// Moves every pane of tab `src` into tab `dest` and closes `src`. `place` puts
+// src's tree at a chosen spot; without it, one pane takes the next free slot and
+// several keep their arrangement beside dest's grid, split along the longer side.
+function mergeTab(src, dest, place) {
+  const moved = leaves(src.root).filter((p) => !isEmptyPane(p));
+  if (place) place(src.root);
+  else if (moved.length === 1) {
+    const slot = slotIn(dest);
+    replaceNode(slot, moved[0], parentOf(slot, dest.root));
+  } else if (moved.length > 1) {
+    if (isEmptyTab(dest)) dest.root = src.root;
+    else {
+      const w = $('stage').clientWidth || 1200;
+      const h = $('stage').clientHeight || 800;
+      const have = leaves(dest.root).filter((p) => !isEmptyPane(p)).length;
+      const ratio = Math.max(0.3, Math.min(0.7, have / (have + moved.length)));
+      dest.root = { type: 'split', dir: w >= h * 1.1 ? 'h' : 'v', ratio, a: dest.root, b: src.root };
+    }
+  }
+  switchTab(dest);
+  tabs = tabs.filter((t) => t !== src);
+  if (moved.length) activePane = moved[0];
+  renderGrid();
+  setActive(activePane);
+  for (const p of moved) flashPane(p);
+}
+
+function finishTabDrop(payload, hit) {
+  if (hit.kind === 'merge') { mergeTab(payload.tab, hit.tab); return; }
+  if (hit.kind === 'reorder') {
+    const rest = tabs.filter((t) => t !== payload.tab);
+    rest.splice(hit.index, 0, payload.tab);
+    tabs = rest;
+    renderTabs();
+    saveLayout();
+    refocus();
+    return;
+  }
+  const tab = hit.kind === 'new' ? addTab() : hit.tab;
+  if (payload.type === 'pane') { movePaneTo(payload.pane, () => slotIn(tab)); return; }
+  // A chat already in that tab just comes to the front.
+  const already = leaves(tab.root).find((p) => (payload.row.shell ? p.termId === payload.row.termId : p.sessionId === payload.row.id));
+  if (already) { focusPane(already, { flash: true }); return; }
+  const dest = slotIn(tab);
+  switchTab(tab);
+  activePane = dest;
+  renderGrid();
+  openRow(payload.row, { pane: dest, flash: true });
+}
+
 function finishDrag() {
-  const { payload, target, zone } = drag;
+  const { payload, target, zone, tabHit } = drag;
   endDragUi();
+  if (tabHit) { finishTabDrop(payload, tabHit); return; }
   if (!target) { refocus(); return; }
+  if (payload.type === 'tab') {
+    const dest = tabOf(target);
+    mergeTab(payload.tab, dest, (tree) => {
+      const spot = zone === 'center' ? target : splitLeaf(target, zone);
+      replaceNode(spot, tree, parentOf(spot, dest.root));
+    });
+    return;
+  }
   if (payload.type === 'pane') {
     const src = payload.pane;
     if (zone === 'center') {
-      // Dropping on a pane's middle swaps the two.
+      // Dropping on a pane's middle swaps the two, even across tabs.
       for (const k of CONTENT_KEYS) [src[k], target[k]] = [target[k], src[k]];
       activePane = target;
       renderGrid();
       setActive(target);
       return;
     }
-    const content = Object.fromEntries(CONTENT_KEYS.map((k) => [k, src[k]]));
-    removeLeaf(src);
-    const dest = splitLeaf(target, zone);
-    Object.assign(dest, content);
-    activePane = dest;
-    renderGrid();
-    setActive(dest);
+    movePaneTo(src, () => splitLeaf(target, zone));
     return;
   }
   const dest = zone === 'center' ? target : splitLeaf(target, zone);
@@ -1146,16 +1551,19 @@ function onExit(m) {
   try { t.term.dispose(); } catch {}
   t.host.remove();
   if (p) {
-    const row = m.sessionId ? findRow(m.sessionId) : null;
     p.termId = null;
-    if (m.kind === 'shell' || !row || row.pending) {
-      // Nothing to resume: a closed terminal, or a chat that never got a message.
-      p.sessionId = null;
-      removeLeaf(p);
-      scheduleRefresh();
-    } else if (!m.evicted) {
+    if (m.evicted && m.kind !== 'shell') {
+      // Panecake closed it to save memory, which only happens in background tabs.
+      // It starts again when the tab is shown.
       p.sessionId = m.sessionId;
       p.ended = m.sessionId;
+      p.lazy = true;
+    } else {
+      // Closed by the user or ended on its own. The chat stays in the sidebar.
+      p.sessionId = null;
+      const tab = removeLeaf(p);
+      scheduleRefresh();
+      if (tab && isEmptyTab(tab) && tabs.length > 1) { closeTab(tab); return; }
     }
     renderGrid();
     refocus();
@@ -1176,7 +1584,7 @@ function onLive(m) {
     t.pid = info.pid;
     if (t.label !== info.label) {
       // A program finishing in a terminal nobody is looking at is worth flagging.
-      if (t.kind === 'shell' && t.label && !info.label && !paneShowingTerm(t.termId)) unread.add('term:' + t.termId);
+      if (t.kind === 'shell' && t.label && !info.label && !visiblePaneForTerm(t.termId)) unread.add('term:' + t.termId);
       t.label = info.label;
       retitled = true;
     }
@@ -1187,7 +1595,7 @@ function onLive(m) {
       if (p) { p.sessionId = info.sessionId; retitled = true; if (p === activePane) setActive(p, false); }
       saveLayout();
     }
-    if (t.kind !== 'shell' && !paneShowingTerm(t.termId) && t.sessionId && ((was === 'busy' && info.status === 'idle') || info.status === 'waiting')) {
+    if (t.kind !== 'shell' && !visiblePaneForTerm(t.termId) && t.sessionId && ((was === 'busy' && info.status === 'idle') || info.status === 'waiting')) {
       unread.add(t.sessionId);
     }
   }
@@ -1195,6 +1603,7 @@ function onLive(m) {
     for (const p of leaves()) if (p.titleEl) p.titleEl.textContent = paneTitle(p);
     updateHeader();
   }
+  renderTabs();
   renderList();
   renderSummary();
 }
@@ -1240,6 +1649,15 @@ window.addEventListener('keydown', (e) => {
   else if (k === 'g' && find) { e.preventDefault(); runFind(e.shiftKey ? 'back' : 'forward'); }
   else if (k === 'b') { e.preventDefault(); toggleSidebar(); }
   else if (k === 'w') { e.preventDefault(); closePane(activePane); }
+  else if (k === 't' && !e.shiftKey && !e.altKey) { e.preventDefault(); showTab(addTab()); }
+  // Key codes, so the shortcuts work the same on Turkish, German and other layouts.
+  else if (/^Digit[1-9]$/.test(e.code) && !e.shiftKey && !e.altKey) {
+    e.preventDefault();
+    const n = Number(e.code.slice(5));
+    showTab(n === 9 ? tabs[tabs.length - 1] : tabs[n - 1] || curTab);
+  }
+  else if (e.shiftKey && e.code === 'BracketLeft') { e.preventDefault(); stepTab(-1); }
+  else if (e.shiftKey && e.code === 'BracketRight') { e.preventDefault(); stepTab(1); }
   else if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); stepPane(-1); }
   else if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); stepPane(1); }
   else if (e.key === '[') { e.preventDefault(); goHistory(-1); }
@@ -1276,6 +1694,7 @@ async function refreshSessions() {
   if (prefs.showHidden) q.set('hidden', '1');
   data = await api('sessions?' + q);
   renderList();
+  renderTabs();
   updateHeader();
   renderSummary();
 }
@@ -1371,7 +1790,7 @@ function renderIssues(list, q, buildGroup) {
   const ids = new Set(groups.flatMap((g) => g.sessions.map((s) => s.id)));
   const inside = (t) => t.project && groups.some((g) => g.path === t.project);
   const live = [...terms.values()].filter((t) => (t.sessionId && ids.has(t.sessionId)) || inside(t));
-  const showing = leaves().some((p) => (p.sessionId && ids.has(p.sessionId)) || live.some((t) => t.termId === p.termId));
+  const showing = everyLeaf().some((p) => (p.sessionId && ids.has(p.sessionId)) || live.some((t) => t.termId === p.termId));
   const open = !!q || prefs.issuesOpen || (prefs.issuesOpen === undefined && showing);
   const section = el('div', 'issues' + (open ? '' : ' collapsed'));
   const head = el('div', 'issues-head');
@@ -1442,7 +1861,6 @@ function renderRow(r, depth, hasNext, fold) {
   if (depth) { row.classList.add('child'); row.style.marginLeft = 13 * Math.min(depth, 3) + 'px'; }
   if (hasNext) row.classList.add('has-next');
   if (r.id === activePane.sessionId) row.classList.add('active');
-  else if (paneShowingChat(r.id)) row.classList.add('shown');
   if (r.id === cursorId) row.classList.add('cursor');
   row.dataset.id = r.id;
   visibleRows.push(r);
@@ -1473,7 +1891,7 @@ function renderRow(r, depth, hasNext, fold) {
     row.title = `Running in ${ext.where}\n` + row.title;
   }
   row.append(status);
-  row.onclick = () => openSession(r.id);
+  row.onclick = () => openSession(r.id, { flash: true });
   row.addEventListener('mousedown', (e) => beginDrag(e, { type: 'row', row: { id: r.id }, title: r.title }));
   row.oncontextmenu = (e) => { e.preventDefault(); rowMenu(e, r); };
   return row;
@@ -1491,7 +1909,6 @@ function renderShellRow(t) {
   const id = 'term:' + t.termId;
   row.dataset.id = id;
   if (t.termId === activePane.termId) row.classList.add('active');
-  else if (paneShowingTerm(t.termId)) row.classList.add('shown');
   if (id === cursorId) row.classList.add('cursor');
   row.title = t.cwd;
   const title = shellTitle(t);
@@ -1511,7 +1928,7 @@ function renderShellRow(t) {
   else status.append(el('span', 'dot live'));
   if (t.label) row.title = `Running ${t.label}\n${t.cwd}`;
   row.append(icon, el('span', 'label', title), x, status);
-  row.onclick = () => openRow({ id, shell: true, termId: t.termId });
+  row.onclick = () => openRow({ id, shell: true, termId: t.termId }, { flash: true });
   row.addEventListener('mousedown', (e) => beginDrag(e, { type: 'row', row: { id, shell: true, termId: t.termId }, title }));
   row.oncontextmenu = (e) => {
     e.preventDefault();
@@ -1581,7 +1998,7 @@ function openRow(r, opts = {}) {
   if (r.shell) {
     const t = terms.get(r.termId);
     if (!t) return;
-    const pane = opts.pane || paneShowingTerm(r.termId) || activePane;
+    const pane = opts.pane || paneShowingTerm(r.termId) || freshPane();
     displayIn(pane, t, opts);
     return;
   }
@@ -1590,6 +2007,7 @@ function openRow(r, opts = {}) {
 
 function setNotice(p, title, body, buttons) {
   p.notice = { title, body, buttons };
+  switchTab(tabOf(p));
   activePane = p;
   renderGrid();
 }
@@ -1601,7 +2019,7 @@ function dismissNotice(p) {
 
 async function openSession(id, opts = {}) {
   closeMenus();
-  const pane = opts.pane || paneShowingChat(id) || activePane;
+  const pane = opts.pane || paneShowingChat(id) || freshPane();
   const live = liveTermFor(id);
   if (live && !opts.fork) {
     displayIn(pane, live, opts);
@@ -1609,7 +2027,7 @@ async function openSession(id, opts = {}) {
   }
   // Clicking the chat a pane already shows only needs to focus it.
   if (!opts.fork && paneShowingChat(id) === pane && pane.ended !== id && !opts.force && !opts.mkdir && !opts.pane) {
-    setActive(pane, true, opts.fromHistory);
+    focusPane(pane, opts);
     return;
   }
   const r = await api('open', { sessionId: id, ...termSize(pane), fork: opts.fork, force: opts.force, mkdir: opts.mkdir });
@@ -1638,7 +2056,7 @@ async function openSession(id, opts = {}) {
 
 async function newChat(cwd) {
   closeMenus();
-  const pane = activePane;
+  const pane = freshPane();
   const r = await api('open', { cwd, ...termSize(pane) });
   const target = isAttached(pane) ? pane : activePane;
   if (r.error) return setNotice(target, 'Could not start a chat', r.error, [['OK', () => dismissNotice(target)]]);
@@ -1647,12 +2065,12 @@ async function newChat(cwd) {
   scheduleRefresh();
 }
 
-async function newTerminal() {
+async function newTerminal({ update = false } = {}) {
   closeMenus();
   const cwd = activeCwd() || prefs.lastCwd || data.home;
-  if (!cwd) return;
-  const pane = activePane;
-  const r = await api('shell', { cwd, ...termSize(pane) });
+  if (!cwd && !update) return;
+  const pane = freshPane();
+  const r = await api('shell', { cwd, update, ...termSize(pane) });
   const target = isAttached(pane) ? pane : activePane;
   if (r.error) return setNotice(target, 'Could not open a terminal', r.error, [['OK', () => dismissNotice(target)]]);
   const t = terms.get(r.termId) || createTerm(r.termId, { ...r, status: 'shell' });
@@ -1691,7 +2109,14 @@ function stepChat(dir) {
   const i = visibleRows.findIndex((r) => r.id === key);
   const next = visibleRows[Math.max(0, Math.min(visibleRows.length - 1, (i < 0 ? -1 : i) + dir))];
   if (next && next.id !== key) {
-    openRow(next);
+    const open = next.shell ? paneShowingTerm(next.termId) : paneShowingChat(next.id);
+    let pane = open;
+    if (!open) {
+      // The tab the previous step opened is reused while it still holds just that one item.
+      pane = curTab.stepped && leaves().length === 1 ? curTab.root : freshPane();
+      tabOf(pane).stepped = true;
+    }
+    openRow(next, { flash: true, pane });
     requestAnimationFrame(() => document.querySelector(`.row[data-id="${next.id}"]`)?.scrollIntoView({ block: 'nearest' }));
   }
 }
@@ -1849,12 +2274,43 @@ function settingsPopover() {
   check('Show hidden and archived', 'showHidden', null, refreshSessions);
   num('Max open processes', 'maxLive', 2, 40, 1);
   pop.append(el('div', 'hint', 'Idle chats past this limit close their process and resume when clicked.'));
+  check('Check for updates', 'updateCheck', `Asks GitHub for the newest release at launch and twice a day. Nothing about you or your chats is sent. You have version ${appVersion}.`, () => { if (!prefs.updateCheck) showUpdate(null); });
   pop.hidden = false;
   const r = $('btn-settings').getBoundingClientRect();
   pop.style.left = '10px';
   pop.style.top = 'auto';
   pop.style.bottom = (innerHeight - r.top + 6) + 'px';
 }
+// ---------- updates ----------
+// The server checks GitHub; this shows a footer button while a newer release exists.
+let appVersion = '';
+let updateAvail = null;
+function showUpdate(u) {
+  updateAvail = u;
+  const b = $('btn-update');
+  b.hidden = !u || !prefs.updateCheck || prefs.skipUpdate === u.version;
+  if (u) b.textContent = `Update to ${u.version}`;
+}
+function updatePopover() {
+  const u = updateAvail;
+  const pop = $('popover');
+  pop.replaceChildren();
+  pop.append(el('div', 'update-title', `Panecake ${u.version} is available`), el('div', 'hint update-sub', `You have ${u.current}.`));
+  if (u.canRun) pop.append(el('div', 'hint update-sub', 'Update opens a terminal in Panecake\u2019s folder with the update command typed in. Press Return to run it, then quit and reopen Panecake.'));
+  else pop.append(el('div', 'hint update-sub', 'This copy was not installed with git clone, so download the new release from GitHub.'));
+  const row = el('div', 'update-actions');
+  const btn = (label, cls, fn) => { const b = el('button', cls, label); b.onclick = (e) => { e.stopPropagation(); closeMenus(); fn(); }; row.append(b); };
+  if (u.canRun) btn('Update', 'btn primary-btn', () => newTerminal({ update: true }));
+  btn('What\u2019s new', 'btn', () => api('open-url', { url: u.url }));
+  btn('Skip this version', 'btn', () => { savePrefs({ skipUpdate: u.version }); showUpdate(u); refocus(); });
+  pop.append(row);
+  pop.hidden = false;
+  const r = $('btn-update').getBoundingClientRect();
+  pop.style.left = '10px';
+  pop.style.top = 'auto';
+  pop.style.bottom = (innerHeight - r.top + 6) + 'px';
+}
+
 function applyTermPrefs() {
   for (const t of terms.values()) {
     t.term.options.fontFamily = FONTS[prefs.fontFamily] || FONTS.system;
@@ -1898,7 +2354,7 @@ $('search').addEventListener('keydown', (e) => {
   } else if (e.key === 'Enter') {
     e.preventDefault();
     const r = visibleRows.find((v) => v.id === cursorId) || visibleRows[0];
-    if (r) { clearSearch(); openRow(r); }
+    if (r) { clearSearch(); openRow(r, { flash: true }); }
   } else if (e.key === 'Escape') {
     e.preventDefault();
     e.stopPropagation();
@@ -1919,6 +2375,10 @@ $('btn-new').onclick = (e) => { e.stopPropagation(); newChatMenu($('btn-new')); 
 $('btn-settings').onclick = (e) => {
   e.stopPropagation();
   if (!$('popover').hidden) closeMenus(); else settingsPopover();
+};
+$('btn-update').onclick = (e) => {
+  e.stopPropagation();
+  if (!$('popover').hidden) closeMenus(); else updatePopover();
 };
 $('btn-sidebar-1').onclick = toggleSidebar;
 $('btn-sidebar-2').onclick = toggleSidebar;
@@ -1973,10 +2433,13 @@ setInterval(renderList, 60000);
 (async function start() {
   const s = await api('state');
   prefs = { ...PREF_DEFAULTS, ...s.prefs };
+  appVersion = s.version || '';
   applyChrome();
+  showUpdate(s.update);
   await refreshSessions();
   connect();
   await connected;
   await restoreLayout();
+  await resumeBackgroundChats(s.liveChats || []);
   const wait = setInterval(() => { if (data.ready) clearInterval(wait); else refreshSessions(); }, 1000);
 })();
