@@ -13,7 +13,7 @@ Nothing leaves this machine until the user approves the preview in step 4.
 
 ## 1. Check the starting point
 
-- The branch is `main`, the working tree is clean, and `git fetch` shows `main` level with `origin/main`. If not, say what is off and stop.
+- The branch is `main`, the working tree is clean, and after `git fetch` it is not behind `origin/main`. If not, say what is off and stop. Commits that are not pushed yet are fine: they go out with the release in step 5.
 - Find the last release with `git describe --tags --abbrev=0`, then read what changed since: `git log <tag>..HEAD` and `git diff --stat <tag>..HEAD`. Read the diffs where a commit message does not say what a user would notice.
 - If nothing changed since the last tag, say so and stop.
 
