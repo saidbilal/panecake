@@ -10,6 +10,7 @@ import crypto from 'node:crypto';
 import { spawn, spawnSync, execFile } from 'node:child_process';
 import pty from 'node-pty';
 import { WebSocketServer } from 'ws';
+import { readNotes } from './scripts/notes.mjs';
 
 const HOME = os.homedir();
 const ROOT = import.meta.dirname;
@@ -71,7 +72,8 @@ function findClaude() {
 const CLAUDE = findClaude();
 
 // ---------- persisted state ----------
-const DEFAULT_STATE = { titles: {}, hidden: {}, hiddenProjects: {}, prefs: {}, liveChats: [] };
+const DEFAULT_STATE = { titles: {}, hidden: {}, hiddenProjects: {}, prefs: {}, liveChats: [], pinned: [] };
+const FRESH_INSTALL = !fs.existsSync(STATE_FILE);
 let state = DEFAULT_STATE;
 try { state = { ...DEFAULT_STATE, ...JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) }; } catch {}
 let saveTimer;
@@ -116,11 +118,30 @@ async function checkForUpdate() {
 }
 const updateInfo = () => (update ? { ...update, current: VERSION, canRun: IS_GIT } : null);
 
+// ---------- what's new ----------
+// After an update, the page shows the CHANGELOG.md sections for the versions the
+// user has not seen yet. A new install starts at its own version, so it shows none.
+// PANECAKE_WHATS_NEW is the release preview: always show, never record.
+const PREVIEW_NOTES = !!process.env.PANECAKE_WHATS_NEW;
+if (FRESH_INSTALL) state.seenVersion = VERSION;
+function whatsNew(current) {
+  const mine = semver(VERSION);
+  if (!mine) return null;
+  const seen = current || PREVIEW_NOTES ? null : semver(state.seenVersion);
+  if (seen && !newer(mine, seen)) return null;
+  const notes = readNotes(ROOT).filter((n) => {
+    const v = semver(n.version);
+    // With no record of what was seen, only this version's notes are shown.
+    return v && !newer(v, mine) && (seen ? newer(v, seen) : n.version === VERSION);
+  }).slice(0, 5);
+  return notes.length ? { version: VERSION, notes } : null;
+}
+
 // ---------- transcript index ----------
 const HEAD = 128 * 1024;
 const TAIL = 128 * 1024;
 const FRONT_MAX = 16 * 1024 * 1024;
-const INDEX_VERSION = 4; // raise when parsing changes, so old results are redone
+const INDEX_VERSION = 5; // raise when parsing changes, so old results are redone
 const index = new Map(); // sessionId -> parsed row
 let indexReady = false;
 let cache = {};
@@ -190,6 +211,8 @@ async function parseSession(file, st) {
     }
     const row = {
       id: path.basename(file, '.jsonl'), mtime: st.mtimeMs, size: st.size,
+      // The file's creation time is when the chat began; for a fork, when it was forked.
+      created: st.birthtimeMs || st.mtimeMs,
       cwd: null, entrypoint: null, branch: null, parent: null, customTitle: null, aiTitle: null, firstPrompt: '', lastPrompt: '',
     };
     row.entrypoint = firstMatch(head, /"entrypoint":"([^"]+)"/) || firstMatch(tail, /"entrypoint":"([^"]+)"/);
@@ -344,14 +367,19 @@ function titleOf(row) {
     || row.firstPrompt || row.lastPrompt || 'New session';
 }
 
-function sidebarData(includeAutomated, includeHidden) {
+function sidebarData(includeAutomated, includeHidden, byCreated) {
+  // Opening a chat resumes it, and resuming appends to the transcript, so order by
+  // last change moves a chat to the top on a click. Order by creation stays put.
+  const when = (r) => (byCreated ? r.created : r.mtime);
   const liveIds = new Map();
   for (const t of terms.values()) if (t.sessionId) liveIds.set(t.sessionId, t);
+  // A pinned chat is listed whatever else would hide it.
+  const pinned = new Set(state.pinned || []);
   const rows = [];
   let hiddenAutomated = 0;
   for (const row of index.values()) {
     const meta = desktopMeta.get(row.id);
-    const live = liveIds.has(row.id);
+    const live = liveIds.has(row.id) || pinned.has(row.id);
     // Scratch folders under the temp directory are throwaway agent runs.
     const scratch = /^\/(private\/)?tmp\//.test(row.cwd || '');
     const interactive = !scratch && (row.entrypoint === 'cli' || row.entrypoint === 'claude-desktop' || !!meta);
@@ -375,15 +403,15 @@ function sidebarData(includeAutomated, includeHidden) {
   };
   const add = (r) => {
     const p = projectOf(r.cwd);
-    if (state.hiddenProjects[p.path] && !includeHidden && !liveIds.has(r.id)) return;
+    if (state.hiddenProjects[p.path] && !includeHidden && !liveIds.has(r.id) && !pinned.has(r.id)) return;
     const g = groupFor(p);
-    g.last = Math.max(g.last, r.mtime);
+    g.last = Math.max(g.last, when(r));
     g.sessions.push(r);
   };
   for (const r of rows) {
     add({
       id: r.id, title: titleOf(r), preview: r.lastPrompt || r.firstPrompt, cwd: r.cwd, branch: r.branch,
-      worktree: projectOf(r.cwd).worktree, mtime: r.mtime, entrypoint: r.entrypoint,
+      worktree: projectOf(r.cwd).worktree, mtime: r.mtime, created: r.created || r.mtime, entrypoint: r.entrypoint,
       parent: r.parent || localToCli.get(desktopMeta.get(r.id)?.forkedFromLocal) || null,
       hidden: !!state.hidden[r.id] || !!desktopMeta.get(r.id)?.archived,
     });
@@ -393,7 +421,7 @@ function sidebarData(includeAutomated, includeHidden) {
     if (t.kind !== 'shell' && t.sessionId && !index.has(t.sessionId)) {
       add({
         id: t.sessionId, title: state.titles[t.sessionId] || 'New session', preview: '', cwd: t.cwd, branch: null,
-        worktree: projectOf(t.cwd).worktree, mtime: t.startedAt, parent: null, entrypoint: 'cli', pending: true,
+        worktree: projectOf(t.cwd).worktree, mtime: t.startedAt, created: t.startedAt, parent: null, entrypoint: 'cli', pending: true,
       });
     }
   }
@@ -404,8 +432,8 @@ function sidebarData(includeAutomated, includeHidden) {
     g.last = Math.max(g.last, t.startedAt);
   }
   const projects = [...groups.values()].sort((a, b) => b.last - a.last);
-  for (const g of projects) g.sessions.sort((a, b) => b.mtime - a.mtime);
-  return { ready: indexReady, projects, hiddenAutomated, home: HOME, hiddenProjects: state.hiddenProjects };
+  for (const g of projects) g.sessions.sort((a, b) => when(b) - when(a));
+  return { ready: indexReady, projects, pinned: state.pinned || [], hiddenAutomated, home: HOME, hiddenProjects: state.hiddenProjects };
 }
 
 // ---------- live session registry ----------
@@ -703,11 +731,20 @@ async function api(req, res, url) {
   const body = req.method === 'POST' ? await readBody(req) : {};
   switch (route) {
     case 'sessions':
-      return send(res, 200, sidebarData(url.searchParams.get('automated') === '1', url.searchParams.get('hidden') === '1'));
+      return send(res, 200, sidebarData(url.searchParams.get('automated') === '1', url.searchParams.get('hidden') === '1', url.searchParams.get('sort') === 'created'));
     case 'terms':
       return send(res, 200, { terms: termList(), external: externalLive() });
-    case 'state':
-      return send(res, 200, { prefs: state.prefs, hiddenProjects: state.hiddenProjects, liveChats: state.liveChats || [], version: VERSION, update: updateInfo() });
+    case 'state': {
+      const fresh = state.seenVersion === VERSION && !PREVIEW_NOTES ? null : whatsNew();
+      // Nothing to show for this version, so do not ask again.
+      if (!fresh && !PREVIEW_NOTES && state.seenVersion !== VERSION) { state.seenVersion = VERSION; saveState(); }
+      return send(res, 200, { prefs: state.prefs, hiddenProjects: state.hiddenProjects, liveChats: state.liveChats || [], version: VERSION, update: updateInfo(), whatsNew: fresh, hasNotes: !!whatsNew(true) });
+    }
+    case 'whats-new':
+      return send(res, 200, whatsNew(true) || {});
+    case 'whats-new-seen':
+      if (!PREVIEW_NOTES && state.seenVersion !== VERSION) { state.seenVersion = VERSION; saveState(); }
+      return send(res, 200, { ok: true });
     case 'prefs': {
       const wasOff = state.prefs.updateCheck === false;
       state.prefs = { ...state.prefs, ...body };
@@ -758,8 +795,19 @@ async function api(req, res, url) {
     case 'hide':
       if (!UUID.test(body.id || '')) return send(res, 400, {});
       if (body.hidden) state.hidden[body.id] = 1; else delete state.hidden[body.id];
+      // Pinned chats always show, so hiding one unpins it.
+      if (body.hidden) state.pinned = (state.pinned || []).filter((id) => id !== body.id);
       saveState(); announceChanged();
       return send(res, 200, { ok: true });
+    case 'pins': {
+      // The whole list in the user's order. Ids without a transcript are kept, since
+      // the list can arrive while chats are still being indexed.
+      if (!Array.isArray(body.ids)) return send(res, 400, {});
+      state.pinned = [...new Set(body.ids.filter((id) => typeof id === 'string' && UUID.test(id)))].slice(0, 500);
+      for (const id of state.pinned) delete state.hidden[id];
+      saveState(); announceChanged();
+      return send(res, 200, { ok: true });
+    }
     case 'hide-project':
       if (body.hidden) state.hiddenProjects[body.path] = 1; else delete state.hiddenProjects[body.path];
       saveState(); announceChanged();

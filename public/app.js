@@ -19,7 +19,7 @@ const api = async (route, body) => {
 const native = (msg) => { try { window.webkit?.messageHandlers?.panecake?.postMessage(msg); } catch {} };
 
 const PREF_DEFAULTS = {
-  theme: 'dark', uiFontSize: 13.5, fontSize: 13.5, lineHeight: 1.3, fontFamily: 'system', optionMeta: false, showAutomated: false, showHidden: false,
+  theme: 'dark', uiFontSize: 13.5, fontSize: 13.5, lineHeight: 1.3, fontFamily: 'system', optionMeta: false, showAutomated: false, showHidden: false, sortBy: 'active',
   maxLive: 10, updateCheck: true, skipUpdate: null, sidebarWidth: 300, sidebarHidden: false, collapsed: {}, expanded: {}, folds: {}, lastSession: null, layout: null, lastCwd: null,
 };
 const FONTS = {
@@ -1394,6 +1394,18 @@ function updateDrag(ev) {
   g.style.top = ev.clientY + 10 + 'px';
   drag.tabHit = null;
   drag.target = null;
+  drag.pinAt = pinDropAt(ev);
+  $('pin-line').hidden = !drag.pinAt;
+  if (drag.pinAt) {
+    const line = $('pin-line');
+    line.style.left = drag.pinAt.left + 'px';
+    line.style.top = drag.pinAt.y - 1 + 'px';
+    line.style.width = drag.pinAt.width + 'px';
+    clearTimeout(drag.spring?.timer);
+    drag.spring = null;
+    $('drop-preview').hidden = true;
+    return;
+  }
   const overTabs = updateTabDrag(ev);
   if (!drag.tabHit || drag.tabHit.tab !== drag.spring?.tab) { clearTimeout(drag.spring?.timer); drag.spring = null; }
   // A dragged tab can go into the grid only once another tab has opened under it.
@@ -1429,9 +1441,26 @@ function updateDrag(ev) {
   prev.firstElementChild.hidden = false;
   prev.hidden = false;
 }
+// A chat dragged over the Pinned section lands between two of its rows: this
+// reorders a pinned chat and pins any other.
+function pinDropAt(ev) {
+  const src = drag.payload;
+  const box = document.querySelector('#list .pinned');
+  if (src.type !== 'row' || src.row.shell || !box) return null;
+  const area = $('list').getBoundingClientRect();
+  const b = box.getBoundingClientRect();
+  const top = Math.max(b.top, area.top);
+  const bottom = Math.min(b.bottom + 8, area.bottom);
+  if (ev.clientX < area.left || ev.clientX >= area.right || ev.clientY < top || ev.clientY >= bottom) return null;
+  const rows = [...box.querySelectorAll('.row')];
+  const next = rows.find((n) => { const r = n.getBoundingClientRect(); return ev.clientY < r.top + r.height / 2; });
+  const edge = next ? next.getBoundingClientRect().top : rows[rows.length - 1].getBoundingClientRect().bottom;
+  return { before: next ? next.dataset.id : null, y: edge, left: b.left + 6, width: b.width - 12 };
+}
 function endDragUi() {
   clearTimeout(drag?.spring?.timer);
   drag = null;
+  $('pin-line').hidden = true;
   $('drop-layer').hidden = true;
   $('drop-preview').hidden = true;
   $('drag-ghost').hidden = true;
@@ -1503,8 +1532,9 @@ function finishTabDrop(payload, hit) {
 }
 
 function finishDrag() {
-  const { payload, target, zone, tabHit } = drag;
+  const { payload, target, zone, tabHit, pinAt } = drag;
   endDragUi();
+  if (pinAt) { movePin(payload.row.id, pinAt.before); refocus(); return; }
   if (tabHit) { finishTabDrop(payload, tabHit); return; }
   if (!target) { refocus(); return; }
   if (payload.type === 'tab') {
@@ -1712,6 +1742,7 @@ async function refreshSessions() {
   const q = new URLSearchParams();
   if (prefs.showAutomated) q.set('automated', '1');
   if (prefs.showHidden) q.set('hidden', '1');
+  if (prefs.sortBy === 'created') q.set('sort', 'created');
   data = await api('sessions?' + q);
   renderList();
   renderTabs();
@@ -1754,8 +1785,12 @@ function renderList() {
     list.append(el('div', 'empty', 'Indexing your chats…'));
     return;
   }
+  const pinnedIds = new Set(data.pinned || []);
+  const pinnedBox = renderPinned(q);
+  if (pinnedBox) list.append(pinnedBox);
+  const rest = [];
   const buildGroup = (g) => {
-    const rows = g.sessions.filter((s) => matches(s, g, q));
+    const rows = g.sessions.filter((s) => !pinnedIds.has(s.id) && matches(s, g, q));
     const shells = [...terms.values()]
       .filter((t) => t.kind === 'shell' && t.project === g.path && (!q || 'terminal'.includes(q) || shellTitle(t).toLowerCase().includes(q)))
       .sort((a, b) => a.startedAt - b.startedAt);
@@ -1790,7 +1825,7 @@ function renderList() {
   for (const g of data.projects) {
     if (g.issue || g.path === data.home) continue;
     const box = buildGroup(g);
-    if (box) list.append(box);
+    if (box) rest.push(box);
   }
   // Home and the issue folders sit together below the real projects.
   const bottom = el('div', 'bottom-groups');
@@ -1798,9 +1833,71 @@ function renderList() {
   const homeBox = home && buildGroup(home);
   if (homeBox) bottom.append(homeBox);
   renderIssues(bottom, q, buildGroup);
-  if (bottom.children.length) list.append(bottom);
+  if (bottom.children.length) rest.push(bottom);
+  if (rest.length) list.append(renderListHead(), ...rest);
   if (!list.children.length) list.append(el('div', 'empty', q ? 'No matching chats.' : 'No chats yet.'));
   list.scrollTop = scroll;
+}
+
+// Pinned chats sit above the projects in the user's own order, whatever the sort.
+function renderPinned(q) {
+  const rows = [];
+  for (const id of data.pinned || []) {
+    for (const g of data.projects) {
+      const r = g.sessions.find((s) => s.id === id);
+      if (r) { if (matches(r, g, q)) rows.push([r, g]); break; }
+    }
+  }
+  if (!rows.length) return null;
+  const box = el('div', 'pinned');
+  box.append(el('div', 'list-head', 'Pinned'));
+  for (const [r, g] of rows) {
+    const row = renderRow(r, 0, false, null);
+    row.title = [g.name, row.title].filter(Boolean).join('\n');
+    box.append(row);
+  }
+  return box;
+}
+
+// The heading over the projects carries the sort order, which pins ignore.
+const SORTS = [['active', 'Last activity'], ['created', 'Date created']];
+function renderListHead() {
+  const head = el('div', 'list-head');
+  const cur = prefs.sortBy === 'created' ? 'created' : 'active';
+  const b = el('button', 'sort', SORTS.find((x) => x[0] === cur)[1]);
+  b.id = 'btn-sort';
+  b.title = 'Sort chats and projects. Opening a chat counts as activity and moves it to the top; Date created keeps the order fixed.';
+  b.append(el('span', 'caret'));
+  b.onmousedown = (e) => e.stopPropagation();
+  b.onclick = (e) => {
+    e.stopPropagation();
+    if (!$('menu').hidden) return closeMenus();
+    const r = b.getBoundingClientRect();
+    showMenu(r.left, r.bottom + 4, [
+      { head: 'Sort by' },
+      ...SORTS.map(([k, label]) => ({ label, note: k === cur ? '\u2713' : '', fn: () => { savePrefs({ sortBy: k }); refreshSessions(); refocus(); } })),
+    ]);
+  };
+  head.append(el('span', 'name', 'Chats'), b);
+  return head;
+}
+
+function setPins(ids) {
+  data.pinned = ids;
+  renderList();
+  api('pins', { ids });
+}
+function togglePin(id) {
+  const cur = data.pinned || [];
+  setPins(cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]);
+}
+// Puts `id` just before `before` in the pinned order, or last when there is none.
+function movePin(id, before) {
+  if (before === id) return;
+  const next = (data.pinned || []).filter((x) => x !== id);
+  const at = before ? next.indexOf(before) : -1;
+  next.splice(at < 0 ? next.length : at, 0, id);
+  if (next.join() !== (data.pinned || []).join()) setPins(next);
 }
 
 // issue-N folders sit in their own section at the bottom, closed until wanted.
@@ -1887,7 +1984,7 @@ function renderRow(r, depth, hasNext, fold) {
   const tipParts = [r.preview, r.worktree ? `worktree: ${r.worktree}` : (r.branch ? `branch: ${r.branch}` : '')].filter(Boolean);
   row.title = tipParts.join('\n');
 
-  row.append(el('span', 'label', r.title), el('span', 'when', relTime(r.mtime)));
+  row.append(el('span', 'label', r.title), el('span', 'when', relTime(prefs.sortBy === 'created' ? r.created : r.mtime)));
   if (fold !== null) {
     const f = el('span', 'fold' + (fold ? '' : ' closed'));
     f.append(el('span', 'caret'));
@@ -2203,7 +2300,9 @@ window.addEventListener('mousedown', (e) => {
 
 function rowMenu(e, r) {
   const t = liveTermFor(r.id);
+  const isPinned = (data.pinned || []).includes(r.id);
   showMenu(e.clientX, e.clientY, [
+    { label: isPinned ? 'Unpin' : 'Pin to top', fn: () => togglePin(r.id) },
     { label: 'Rename…', fn: () => renamePrompt(r) },
     { label: 'Fork into a new copy', fn: () => openSession(r.id, { fork: true }) },
     { label: 'Open in Terminal.app', fn: () => openInTerminal(r.id) },
@@ -2317,6 +2416,11 @@ function settingsPopover() {
   num('Max open processes', 'maxLive', 2, 40, 1);
   pop.append(el('div', 'hint', 'Idle chats past this limit close their process and resume when clicked.'));
   check('Check for updates', 'updateCheck', `Asks GitHub for the newest release at launch and twice a day. Nothing about you or your chats is sent. You have version ${appVersion}.`, () => { if (!prefs.updateCheck) showUpdate(null); });
+  if (hasNotes) {
+    const b = el('button', 'btn notes-btn', `What\u2019s new in ${appVersion}`);
+    b.onclick = async (e) => { e.stopPropagation(); closeMenus(); showWhatsNew(await api('whats-new')); };
+    pop.append(b);
+  }
   pop.hidden = false;
   const r = $('btn-settings').getBoundingClientRect();
   pop.style.left = '10px';
@@ -2351,6 +2455,59 @@ function updatePopover() {
   pop.style.left = '10px';
   pop.style.top = 'auto';
   pop.style.bottom = (innerHeight - r.top + 6) + 'px';
+}
+
+// ---------- what's new ----------
+// After an update the server sends the release notes the user has not seen. They
+// are Markdown from CHANGELOG.md and go through the same sanitizer as previews.
+let hasNotes = false;
+function showWhatsNew(w) {
+  if (!w?.notes?.length) return;
+  $('whatsnew')?.remove();
+  const veil = el('div');
+  veil.id = 'whatsnew';
+  const card = el('div', 'wn-card');
+  const several = w.notes.length > 1;
+  card.append(el('div', 'wn-title', several ? 'What\u2019s new in Panecake' : `What\u2019s new in Panecake ${w.notes[0].version}`));
+  const body = el('div', 'wn-body');
+  for (const n of w.notes) {
+    if (several) body.append(el('div', 'wn-version', n.version));
+    const html = DOMPurify.sanitize(marked.parse(n.text, { gfm: true }), { FORBID_TAGS: ['style', 'form', 'input', 'iframe', 'object', 'embed', 'img', 'video', 'audio'] });
+    body.append(...new DOMParser().parseFromString(html, 'text/html').body.childNodes);
+  }
+  // Nothing in the notes navigates the window; web links open in the browser.
+  const link = (e) => {
+    const a = e.target.closest('a');
+    if (!a) return;
+    e.preventDefault();
+    const href = a.getAttribute('href') || '';
+    if (e.type === 'click' && /^https?:\/\//i.test(href)) api('open-url', { url: href });
+  };
+  body.addEventListener('click', link);
+  body.addEventListener('auxclick', link);
+  const ok = el('button', 'btn primary-btn', 'Got it');
+  const actions = el('div', 'wn-actions');
+  actions.append(ok);
+  card.append(body, actions);
+  veil.append(card);
+  // Keys stay with the popup, so nothing is typed into the chat behind it.
+  const keys = (e) => {
+    if (e.metaKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === 'Escape' || e.key === 'Enter') close();
+  };
+  const close = () => {
+    veil.remove();
+    window.removeEventListener('keydown', keys, true);
+    api('whats-new-seen', {});
+    refocus();
+  };
+  ok.onclick = close;
+  veil.addEventListener('mousedown', (e) => { if (e.target === veil) close(); });
+  window.addEventListener('keydown', keys, true);
+  closeMenus();
+  document.body.append(veil);
 }
 
 function applyTermPrefs() {
@@ -2476,8 +2633,10 @@ setInterval(renderList, 60000);
   const s = await api('state');
   prefs = { ...PREF_DEFAULTS, ...s.prefs };
   appVersion = s.version || '';
+  hasNotes = !!s.hasNotes;
   applyChrome();
   showUpdate(s.update);
+  showWhatsNew(s.whatsNew);
   await refreshSessions();
   connect();
   await connected;

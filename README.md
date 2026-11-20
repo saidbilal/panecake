@@ -30,9 +30,11 @@ settings. When Claude Code updates, Panecake gets the update for free.
 
 ## Features
 
-- **Every chat in one sidebar.** Grouped by project and sorted by recent activity,
-  with Claude Code's own automatic titles. Rename or hide chats without touching
-  Claude Code's files.
+- **Every chat in one sidebar.** Grouped by project and sorted by recent activity
+  or by date created, with Claude Code's own automatic titles. Rename or hide
+  chats without touching Claude Code's files.
+- **Pinned chats.** Right-click a chat and choose Pin to top. Pinned chats stay
+  above the projects; drag them into the order you want.
 - **Live status.** A spinner means a chat is working; an amber dot means it is
   waiting on you, for example at a permission prompt.
 - **Search (⌘K).** Searches titles and the text inside chats. Open any result to
@@ -82,7 +84,8 @@ URL it prints.
 
 When a new release is out, an **Update** button appears at the bottom of the
 sidebar. It opens a terminal in Panecake's folder with the update command typed
-in; press Return, then quit and reopen Panecake. To update by hand:
+in; press Return, then quit and reopen Panecake. The first launch of a new
+version shows what changed, and Settings can show it again. To update by hand:
 
 ```sh
 cd panecake

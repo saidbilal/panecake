@@ -8,7 +8,8 @@
   "scripts": {
     "start": "node server.mjs --print-url",
     "setup": "npm install --ignore-scripts && node scripts/vendor.mjs",
-    "build": "npm run setup && bash mac/build.sh"
+    "build": "npm run setup && bash mac/build.sh",
+    "preview-notes": "node scripts/notes.mjs preview"
   },
   "dependencies": {
     "@xterm/addon-fit": "0.11.0",
