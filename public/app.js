@@ -1810,7 +1810,10 @@ function renderList() {
     head.onclick = () => {
       const next = { ...prefs.collapsed };
       if (next[g.path]) delete next[g.path]; else next[g.path] = true;
-      savePrefs({ collapsed: next });
+      // Collapsing also drops "Show more", so the group reopens at its short length.
+      const expanded = { ...prefs.expanded };
+      if (next[g.path]) delete expanded[g.path];
+      savePrefs({ collapsed: next, expanded });
       renderList();
     };
     head.oncontextmenu = (e) => { e.preventDefault(); projectMenu(e, g); };
