@@ -72,7 +72,7 @@ function findClaude() {
 const CLAUDE = findClaude();
 
 // ---------- persisted state ----------
-const DEFAULT_STATE = { titles: {}, hidden: {}, hiddenProjects: {}, prefs: {}, liveChats: [], pinned: [] };
+const DEFAULT_STATE = { titles: {}, hidden: {}, hiddenProjects: {}, prefs: {}, liveChats: [], pinned: [], pinnedProjects: [] };
 const FRESH_INSTALL = !fs.existsSync(STATE_FILE);
 let state = DEFAULT_STATE;
 try { state = { ...DEFAULT_STATE, ...JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')) }; } catch {}
@@ -504,7 +504,7 @@ function sidebarData(includeAutomated, includeHidden, byCreated) {
   }
   const projects = [...groups.values()].sort((a, b) => b.last - a.last);
   for (const g of projects) g.sessions.sort((a, b) => when(b) - when(a));
-  return { ready: indexReady, projects, pinned: state.pinned || [], hiddenAutomated, home: HOME, hiddenProjects: state.hiddenProjects };
+  return { ready: indexReady, projects, pinned: state.pinned || [], pinnedProjects: state.pinnedProjects || [], hiddenAutomated, home: HOME, hiddenProjects: state.hiddenProjects };
 }
 
 // ---------- live session registry ----------
@@ -879,8 +879,19 @@ async function api(req, res, url) {
       saveState(); announceChanged();
       return send(res, 200, { ok: true });
     }
+    case 'pin-projects': {
+      // Project folders in the user's order, kept even before their chats are indexed.
+      if (!Array.isArray(body.paths)) return send(res, 400, {});
+      const ok = (p) => typeof p === 'string' && p.length < 4096 && path.isAbsolute(p);
+      state.pinnedProjects = [...new Set(body.paths.filter(ok))].slice(0, 200);
+      for (const p of state.pinnedProjects) delete state.hiddenProjects[p];
+      saveState(); announceChanged();
+      return send(res, 200, { ok: true });
+    }
     case 'hide-project':
       if (body.hidden) state.hiddenProjects[body.path] = 1; else delete state.hiddenProjects[body.path];
+      // A pinned project always shows, so hiding one unpins it.
+      if (body.hidden) state.pinnedProjects = (state.pinnedProjects || []).filter((p) => p !== body.path);
       saveState(); announceChanged();
       return send(res, 200, { ok: true });
     case 'search': {

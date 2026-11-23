@@ -20,5 +20,8 @@
     "marked": "18.1.3",
     "node-pty": "1.1.0",
     "ws": "8.22.1"
+  },
+  "devDependencies": {
+    "playwright-core": "1.65.1"
   }
 }

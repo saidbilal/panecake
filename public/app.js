@@ -19,7 +19,7 @@ const api = async (route, body) => {
 const native = (msg) => { try { window.webkit?.messageHandlers?.panecake?.postMessage(msg); } catch {} };
 
 const PREF_DEFAULTS = {
-  theme: 'dark', uiFontSize: 13.5, fontSize: 13.5, lineHeight: 1.3, fontFamily: 'system', optionMeta: false, showAutomated: false, showHidden: false, sortBy: 'active',
+  theme: 'dark', uiFontSize: 13.5, fontSize: 13.5, lineHeight: 1.3, fontFamily: 'system', optionMeta: false, showAutomated: false, showHidden: false, sortBy: 'created',
   maxLive: 10, updateCheck: true, skipUpdate: null, sidebarWidth: 300, sidebarHidden: false, collapsed: {}, expanded: {}, folds: {}, lastSession: null, layout: null, lastCwd: null,
 };
 const FONTS = {
@@ -1441,20 +1441,21 @@ function updateDrag(ev) {
   prev.firstElementChild.hidden = false;
   prev.hidden = false;
 }
-// A chat dragged over the Pinned section lands between two of its rows: this
-// reorders a pinned chat and pins any other.
+// A chat dragged over the Pinned section's chats lands between two of them: this
+// reorders a pinned chat and pins any other. Pinned projects below are not targets.
 function pinDropAt(ev) {
   const src = drag.payload;
   const box = document.querySelector('#list .pinned');
   if (src.type !== 'row' || src.row.shell || !box) return null;
+  const chats = box.querySelector('.pinned-chats');
   const area = $('list').getBoundingClientRect();
   const b = box.getBoundingClientRect();
   const top = Math.max(b.top, area.top);
-  const bottom = Math.min(b.bottom + 8, area.bottom);
+  const bottom = Math.min(chats.getBoundingClientRect().bottom + 8, area.bottom);
   if (ev.clientX < area.left || ev.clientX >= area.right || ev.clientY < top || ev.clientY >= bottom) return null;
-  const rows = [...box.querySelectorAll('.row')];
+  const rows = [...chats.querySelectorAll('.row')];
   const next = rows.find((n) => { const r = n.getBoundingClientRect(); return ev.clientY < r.top + r.height / 2; });
-  const edge = next ? next.getBoundingClientRect().top : rows[rows.length - 1].getBoundingClientRect().bottom;
+  const edge = next ? next.getBoundingClientRect().top : rows.length ? rows[rows.length - 1].getBoundingClientRect().bottom : chats.getBoundingClientRect().top;
   return { before: next ? next.dataset.id : null, y: edge, left: b.left + 6, width: b.width - 12 };
 }
 function endDragUi() {
@@ -1742,7 +1743,7 @@ async function refreshSessions() {
   const q = new URLSearchParams();
   if (prefs.showAutomated) q.set('automated', '1');
   if (prefs.showHidden) q.set('hidden', '1');
-  if (prefs.sortBy === 'created') q.set('sort', 'created');
+  if (prefs.sortBy !== 'active') q.set('sort', 'created');
   data = await api('sessions?' + q);
   renderList();
   renderTabs();
@@ -1786,15 +1787,15 @@ function renderList() {
     return;
   }
   const pinnedIds = new Set(data.pinned || []);
-  const pinnedBox = renderPinned(q);
-  if (pinnedBox) list.append(pinnedBox);
+  const pinnedPaths = new Set(data.pinnedProjects || []);
   const rest = [];
-  const buildGroup = (g) => {
+  // `keep` shows a pinned project's heading even when all its chats are pinned on their own.
+  const buildGroup = (g, keep) => {
     const rows = g.sessions.filter((s) => !pinnedIds.has(s.id) && matches(s, g, q));
     const shells = [...terms.values()]
       .filter((t) => t.kind === 'shell' && t.project === g.path && (!q || 'terminal'.includes(q) || shellTitle(t).toLowerCase().includes(q)))
       .sort((a, b) => a.startedAt - b.startedAt);
-    if (!rows.length && !shells.length) return null;
+    if (!rows.length && !shells.length && !(keep && !q)) return null;
     const box = el('div', 'group');
     const collapsed = !q && prefs.collapsed[g.path];
     if (collapsed) box.classList.add('collapsed');
@@ -1825,14 +1826,16 @@ function renderList() {
     }
     return box;
     };
+  const pinnedBox = renderPinned(q, buildGroup);
+  if (pinnedBox) list.append(pinnedBox);
   for (const g of data.projects) {
-    if (g.issue || g.path === data.home) continue;
+    if (g.issue || g.path === data.home || pinnedPaths.has(g.path)) continue;
     const box = buildGroup(g);
     if (box) rest.push(box);
   }
   // Home and the issue folders sit together below the real projects.
   const bottom = el('div', 'bottom-groups');
-  const home = data.projects.find((g) => g.path === data.home && !g.issue);
+  const home = data.projects.find((g) => g.path === data.home && !g.issue && !pinnedPaths.has(g.path));
   const homeBox = home && buildGroup(home);
   if (homeBox) bottom.append(homeBox);
   renderIssues(bottom, q, buildGroup);
@@ -1842,8 +1845,10 @@ function renderList() {
   list.scrollTop = scroll;
 }
 
-// Pinned chats sit above the projects in the user's own order, whatever the sort.
-function renderPinned(q) {
+// Pinned chats sit above the projects in the user's own order, whatever the sort,
+// and pinned projects follow them. A chat pinned on its own stays up here even when
+// its project is pinned too, and is left out of that project's group.
+function renderPinned(q, buildGroup) {
   const rows = [];
   for (const id of data.pinned || []) {
     for (const g of data.projects) {
@@ -1851,22 +1856,29 @@ function renderPinned(q) {
       if (r) { if (matches(r, g, q)) rows.push([r, g]); break; }
     }
   }
-  if (!rows.length) return null;
+  const groups = [];
+  for (const path of data.pinnedProjects || []) {
+    const g = data.projects.find((x) => x.path === path);
+    const box = g && buildGroup(g, true);
+    if (box) groups.push(box);
+  }
+  if (!rows.length && !groups.length) return null;
   const box = el('div', 'pinned');
-  box.append(el('div', 'list-head', 'Pinned'));
+  const chats = el('div', 'pinned-chats');
   for (const [r, g] of rows) {
     const row = renderRow(r, 0, false, null);
     row.title = [g.name, row.title].filter(Boolean).join('\n');
-    box.append(row);
+    chats.append(row);
   }
+  box.append(el('div', 'list-head', 'Pinned'), chats, ...groups);
   return box;
 }
 
 // The heading over the projects carries the sort order, which pins ignore.
-const SORTS = [['active', 'Last activity'], ['created', 'Date created']];
+const SORTS = [['created', 'Date created'], ['active', 'Last activity']];
 function renderListHead() {
   const head = el('div', 'list-head');
-  const cur = prefs.sortBy === 'created' ? 'created' : 'active';
+  const cur = prefs.sortBy === 'active' ? 'active' : 'created';
   const b = el('button', 'sort', SORTS.find((x) => x[0] === cur)[1]);
   b.id = 'btn-sort';
   b.title = 'Sort chats and projects. Opening a chat counts as activity and moves it to the top; Date created keeps the order fixed.';
@@ -1885,6 +1897,14 @@ function renderListHead() {
   return head;
 }
 
+function togglePinProject(path) {
+  const cur = data.pinnedProjects || [];
+  const paths = cur.includes(path) ? cur.filter((x) => x !== path) : [...cur, path];
+  data.pinnedProjects = paths;
+  if (data.hiddenProjects?.[path] && paths.includes(path)) delete data.hiddenProjects[path];
+  renderList();
+  api('pin-projects', { paths });
+}
 function setPins(ids) {
   data.pinned = ids;
   renderList();
@@ -1905,7 +1925,7 @@ function movePin(id, before) {
 
 // issue-N folders sit in their own section at the bottom, closed until wanted.
 function renderIssues(list, q, buildGroup) {
-  const groups = data.projects.filter((g) => g.issue);
+  const groups = data.projects.filter((g) => g.issue && !(data.pinnedProjects || []).includes(g.path));
   if (!groups.length) return;
   const ids = new Set(groups.flatMap((g) => g.sessions.map((s) => s.id)));
   const inside = (t) => t.project && groups.some((g) => g.path === t.project);
@@ -1987,7 +2007,7 @@ function renderRow(r, depth, hasNext, fold) {
   const tipParts = [r.preview, r.worktree ? `worktree: ${r.worktree}` : (r.branch ? `branch: ${r.branch}` : '')].filter(Boolean);
   row.title = tipParts.join('\n');
 
-  row.append(el('span', 'label', r.title), el('span', 'when', relTime(prefs.sortBy === 'created' ? r.created : r.mtime)));
+  row.append(el('span', 'label', r.title), el('span', 'when', relTime(prefs.sortBy === 'active' ? r.mtime : r.created)));
   if (fold !== null) {
     const f = el('span', 'fold' + (fold ? '' : ' closed'));
     f.append(el('span', 'caret'));
@@ -2320,7 +2340,9 @@ function rowMenu(e, r) {
 }
 function projectMenu(e, g) {
   const hidden = data.hiddenProjects?.[g.path];
+  const isPinned = (data.pinnedProjects || []).includes(g.path);
   showMenu(e.clientX, e.clientY, [
+    { label: isPinned ? 'Unpin project' : 'Pin project', fn: () => togglePinProject(g.path) },
     { label: `New chat in ${g.name}`, fn: () => newChat(g.path) },
     { label: 'Open folder in Finder', fn: () => api('reveal', { path: g.path }) },
     '-',
