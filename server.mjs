@@ -85,6 +85,14 @@ function saveState() {
     });
   }, 300);
 }
+// 0.4.0 made date created the default sort. Earlier versions saved the old default
+// with every settings change, so a chosen sort cannot be told from an untouched one:
+// everyone moves to date created once, and can switch back from the sort button.
+if (!state.sortCreatedDefault) {
+  state.sortCreatedDefault = 1;
+  if (state.prefs?.sortBy) state.prefs.sortBy = 'created';
+  if (!FRESH_INSTALL) saveState();
+}
 
 // ---------- update check ----------
 // Asks GitHub for the newest release so the sidebar can say an update exists.
