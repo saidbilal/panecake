@@ -2157,7 +2157,7 @@ async function openSession(id, opts = {}) {
     return setNotice(
       target,
       'This chat’s folder no longer exists',
-      `${r.missingCwd} was removed, probably with its worktree. Claude Code resumes a chat from its original folder, so opening it means recreating that folder empty. The files the chat worked on will not come back.`,
+      `${r.missingCwd} was removed, perhaps with its worktree, or moved somewhere Panecake could not find. Claude Code resumes a chat from its original folder, so opening it means recreating that folder empty. The files the chat worked on will not come back.`,
       [['Recreate folder and open', () => openSession(id, { ...opts, pane: target, mkdir: true }), true], ['Cancel', () => dismissNotice(target)]],
     );
   }

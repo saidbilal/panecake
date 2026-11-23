@@ -141,7 +141,7 @@ function whatsNew(current) {
 const HEAD = 128 * 1024;
 const TAIL = 128 * 1024;
 const FRONT_MAX = 16 * 1024 * 1024;
-const INDEX_VERSION = 5; // raise when parsing changes, so old results are redone
+const INDEX_VERSION = 6; // raise when parsing changes, so old results are redone
 const index = new Map(); // sessionId -> parsed row
 let indexReady = false;
 let cache = {};
@@ -236,6 +236,7 @@ async function parseSession(file, st) {
     const dirName = path.basename(path.dirname(file));
     const seen = [...head.matchAll(new RegExp(CWD, 'g')), ...tail.matchAll(new RegExp(CWD, 'g'))].map((m) => unescape(m[1]));
     row.cwd = seen.find((c) => encodeDir(c) === dirName) || seen[0] || null;
+    row.dir = dirName;
 
     const br = lastMatch(tail, /"gitBranch":"((?:[^"\\]|\\.)*)"/g);
     row.branch = br ? unescape(br) : null;
@@ -279,11 +280,13 @@ async function refreshFile(file) {
     const prev = index.get(id);
     if (prev && prev.mtime === st.mtimeMs && prev.size === st.size) return false;
     const c = cache[id];
-    if (c && c.mtime === st.mtimeMs && c.size === st.size) { index.set(id, c); return true; }
-    index.set(id, await parseSession(file, st));
+    const next = c && c.mtime === st.mtimeMs && c.size === st.size ? c : await parseSession(file, st);
+    // A chat that keeps talking keeps its folder, so moved-folder answers stay valid.
+    if (!prev || prev.cwd !== next.cwd) moved = null;
+    index.set(id, next);
     return true;
   } catch (e) {
-    if (e.code === 'ENOENT') return index.delete(path.basename(file, '.jsonl'));
+    if (e.code === 'ENOENT') { moved = null; return index.delete(path.basename(file, '.jsonl')); }
     return false;
   }
 }
@@ -308,11 +311,78 @@ async function fullScan() {
   });
   const seen = new Set(files.map((f) => path.basename(f, '.jsonl')));
   for (const id of [...index.keys()]) if (!seen.has(id)) index.delete(id);
+  moved = null;
   await pool(files, 24, refreshFile);
   await loadDesktopMeta();
   indexReady = true;
   fs.writeFile(CACHE_FILE, JSON.stringify({ version: INDEX_VERSION, rows: Object.fromEntries(index) }), () => {});
   announceChanged();
+}
+
+// ---------- moved projects ----------
+// Moving a project folder and renaming its transcript folder to match leaves the old
+// path inside every transcript, and Claude Code resumes a chat only from the folder
+// whose name matches where its transcript lives. So when a chat's recorded folder is
+// gone and does not match, look for the folder it moved to: newer chats in the same
+// transcript folder, the same move seen in another project, or a folder renamed next
+// to the old one. A result counts only if it exists and encodes to the folder name,
+// because the encoding is lossy and cannot be decoded.
+let moved = null; // `${dir}\0${cwd}` -> new folder, or null when nothing fits
+let movedHome = new Map(); // transcript folder -> a recorded folder that matches and exists
+let movedSwaps = new Map(); // old folder -> new folder
+let dirChecks = new Map(); // path -> is a folder, until the next rebuild
+const isDir = (p) => {
+  if (!dirChecks.has(p)) {
+    let ok = false;
+    try { ok = fs.statSync(p).isDirectory(); } catch {}
+    dirChecks.set(p, ok);
+  }
+  return dirChecks.get(p);
+};
+
+function buildMoved() {
+  moved = new Map();
+  dirChecks = new Map();
+  movedHome = new Map();
+  movedSwaps = new Map();
+  for (const r of index.values()) {
+    if (r.cwd && r.dir && !movedHome.has(r.dir) && encodeDir(r.cwd) === r.dir && isDir(r.cwd)) movedHome.set(r.dir, r.cwd);
+  }
+  for (const r of index.values()) {
+    const to = r.cwd && movedHome.get(r.dir);
+    if (to && to !== r.cwd && !movedSwaps.has(r.cwd) && !isDir(r.cwd)) movedSwaps.set(r.cwd, to);
+  }
+}
+
+function findMoved(cwd, dir) {
+  if (movedHome.has(dir)) return movedHome.get(dir);
+  for (const [from, to] of movedSwaps) {
+    if (cwd !== from && !cwd.startsWith(from + '/')) continue;
+    const cand = to + cwd.slice(from.length);
+    if (encodeDir(cand) === dir && isDir(cand)) return cand;
+  }
+  for (let p = cwd; p !== path.dirname(p); p = path.dirname(p)) {
+    const rest = cwd.slice(p.length);
+    if (!dir.endsWith(encodeDir(rest))) continue;
+    const want = dir.slice(0, dir.length - rest.length);
+    const parent = path.dirname(p);
+    let names = [];
+    try { names = fs.readdirSync(parent); } catch { continue; }
+    for (const name of names) {
+      const root = path.join(parent, name);
+      if (encodeDir(root) === want && isDir(root + rest)) return root + rest;
+    }
+  }
+  return null;
+}
+
+// The folder a chat belongs to and resumes from.
+function rowCwd(r) {
+  if (!r?.cwd || !r.dir || encodeDir(r.cwd) === r.dir) return r?.cwd || null;
+  if (!moved) buildMoved();
+  const key = `${r.dir}\0${r.cwd}`;
+  if (!moved.has(key)) moved.set(key, isDir(r.cwd) ? null : findMoved(r.cwd, r.dir));
+  return moved.get(key) || r.cwd;
 }
 
 // Claude Desktop keeps its own titles and archive flags. Read-only use.
@@ -381,7 +451,7 @@ function sidebarData(includeAutomated, includeHidden, byCreated) {
     const meta = desktopMeta.get(row.id);
     const live = liveIds.has(row.id) || pinned.has(row.id);
     // Scratch folders under the temp directory are throwaway agent runs.
-    const scratch = /^\/(private\/)?tmp\//.test(row.cwd || '');
+    const scratch = /^\/(private\/)?tmp\//.test(rowCwd(row) || '');
     const interactive = !scratch && (row.entrypoint === 'cli' || row.entrypoint === 'claude-desktop' || !!meta);
     const hasContent = row.firstPrompt || row.lastPrompt || row.customTitle || row.aiTitle || meta?.title || state.titles[row.id];
     // A chat running anywhere right now always belongs in the list.
@@ -409,9 +479,10 @@ function sidebarData(includeAutomated, includeHidden, byCreated) {
     g.sessions.push(r);
   };
   for (const r of rows) {
+    const cwd = rowCwd(r);
     add({
-      id: r.id, title: titleOf(r), preview: r.lastPrompt || r.firstPrompt, cwd: r.cwd, branch: r.branch,
-      worktree: projectOf(r.cwd).worktree, mtime: r.mtime, created: r.created || r.mtime, entrypoint: r.entrypoint,
+      id: r.id, title: titleOf(r), preview: r.lastPrompt || r.firstPrompt, cwd, branch: r.branch,
+      worktree: projectOf(cwd).worktree, mtime: r.mtime, created: r.created || r.mtime, entrypoint: r.entrypoint,
       parent: r.parent || localToCli.get(desktopMeta.get(r.id)?.forkedFromLocal) || null,
       hidden: !!state.hidden[r.id] || !!desktopMeta.get(r.id)?.archived,
     });
@@ -602,7 +673,7 @@ function evict() {
 let visibleTerms = new Set();
 
 function cwdForSession(id) {
-  return index.get(id)?.cwd || [...terms.values()].find((t) => t.sessionId === id)?.cwd || null;
+  return rowCwd(index.get(id)) || [...terms.values()].find((t) => t.sessionId === id)?.cwd || null;
 }
 
 // ---------- change notifications ----------
